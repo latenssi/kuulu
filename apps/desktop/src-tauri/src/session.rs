@@ -646,6 +646,7 @@ mod tests {
             self_mute: false,
             self_deaf: false,
             admin: false,
+            public_key: [id as u8; 32],
         }
     }
 

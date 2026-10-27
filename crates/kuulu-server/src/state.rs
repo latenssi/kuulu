@@ -27,9 +27,11 @@ pub(crate) const MAX_CHANNELS: usize = 64;
 // 2-byte length, and a nested message adds a tag and a length varint.
 const NAME_FIELD: usize = 1 + 2 + 4 * MAX_NAME;
 const U32_FIELD: usize = 1 + 5;
-/// session_id, display_name, channel_id, self_mute, self_deaf, admin;
-/// wrapped in Channel.
-const MEMBER_BOUND: usize = 1 + 2 + (U32_FIELD + NAME_FIELD + U32_FIELD + 2 + 2 + 2);
+/// A 32-byte key behind a 1-byte length.
+const KEY_FIELD: usize = 1 + 1 + 32;
+/// session_id, display_name, channel_id, self_mute, self_deaf, admin,
+/// public_key; wrapped in Channel.
+const MEMBER_BOUND: usize = 1 + 2 + (U32_FIELD + NAME_FIELD + U32_FIELD + 2 + 2 + 2 + KEY_FIELD);
 /// id and name, wrapped in Welcome with up to a 3-byte length (2 MiB).
 const CHANNEL_BOUND: usize = 1 + 3 + (U32_FIELD + NAME_FIELD);
 /// ServerMessage wrapper, session_id, server_name, protocol_version, plus
@@ -95,6 +97,7 @@ impl Member {
             self_mute: self.mute,
             self_deaf: self.deaf,
             admin: self.admin,
+            public_key: self.key.to_vec(),
         }
     }
 }
@@ -430,6 +433,7 @@ mod tests {
             self_mute: true,
             self_deaf: true,
             admin: true,
+            public_key: vec![0xff; 32],
         };
         let mut channels: Vec<_> = (0..MAX_CHANNELS)
             .map(|i| control::Channel {
@@ -454,7 +458,7 @@ mod tests {
         let len = kuulu_proto::frame::encode(&msg).len() - 4;
         assert!(len <= MAX_FRAME_LEN, "{len}");
         // PLAN.md quotes this number.
-        assert_eq!(MAX_USERS, 369);
+        assert_eq!(MAX_USERS, 301);
         // The bound is tight enough to be useful.
         assert!(len > MAX_FRAME_LEN - 512 - MEMBER_BOUND, "{len}");
     }

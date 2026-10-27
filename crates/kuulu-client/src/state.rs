@@ -1,6 +1,7 @@
 //! The client's copy of the server state, kept current from Welcome and events.
 
 use kuulu_proto::control::{self, Welcome, server_message::Msg};
+use kuulu_proto::identity::PublicKey;
 use std::collections::BTreeMap;
 
 /// What the client knows about the server. While reconnecting it keeps the
@@ -31,6 +32,9 @@ pub struct Member {
     pub self_deaf: bool,
     /// Has the admin role; can change at runtime (an `Event::MemberUpdated`).
     pub admin: bool,
+    /// Identity key, the same in every session of this user. All zeros if
+    /// the server sent none (protocol 1 servers always do).
+    pub public_key: PublicKey,
 }
 
 /// A change to [`ServerState`], already applied when it is delivered.
@@ -129,6 +133,7 @@ impl From<control::Member> for Member {
             self_mute: m.self_mute,
             self_deaf: m.self_deaf,
             admin: m.admin,
+            public_key: m.public_key.try_into().unwrap_or_default(),
         }
     }
 }

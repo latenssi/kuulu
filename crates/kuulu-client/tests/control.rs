@@ -111,21 +111,18 @@ async fn channels_isolate_voice_and_switching_works() {
         .unwrap();
     // No display name, as clients from before display names sent.
     let b = guest(addr, &fp, &invite).await.unwrap();
-    let c = Client::connect_as(
-        addr,
-        &fp,
-        &IdentityKey::generate(),
-        "Cecilia",
-        Some(&invite),
-    )
-    .await
-    .unwrap();
+    let c_key = IdentityKey::generate();
+    let c = Client::connect_as(addr, &fp, &c_key, "Cecilia", Some(&invite))
+        .await
+        .unwrap();
     let c_id = c.session_id().unwrap();
     until(&a, |s| s.members.len() == 3).await;
     let state = a.state();
     assert_eq!(state.channels[&2], "Games");
     assert_eq!(state.members[&b.session_id().unwrap()].display_name, "");
     assert_eq!(state.members[&c_id].display_name, "Cecilia");
+    // The server publishes the verified identity key.
+    assert_eq!(state.members[&c_id].public_key, c_key.public_key());
 
     let mut events = a.events();
     c.request(Request::JoinChannel(2)).await.unwrap();
