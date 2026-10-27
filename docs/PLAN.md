@@ -104,9 +104,9 @@ Kohinanpoisto lisää noin 10 ms, joten se on oletuksena pois päältä ja sen v
 
 **Jitter buffer:** tavoite yksi kehys, enintään kuusi (60 ms). Puskuri kasvaa heti myöhästyneen paketin jälkeen ja kutistuu hitaasti, yksi kehys kahden sekunnin välein, pudottamalla kehyksen hiljaisuuden aikana. Sama mekanismi korjaa äänilaitteiden kellojen ajautumisen.
 
-**Pakettihäviöt:** Opuksen sisäinen FEC toimii vain SILK- ja hybriditilassa, ei low-delay-tilassa. Siksi oletuksena jokainen paketti kantaa myös edellisen kehyksen (redundanssi, noin 2 × 32 kbit/s). Vaihtoehto on VOIP-tila ja sisäinen FEC, joka lisää look-aheadia 4 ms. Valinta tehdään mittaamalla vaiheessa M3.
+**Pakettihäviöt:** Opuksen sisäinen FEC toimii vain SILK- ja hybriditilassa, ei low-delay-tilassa. Siksi oletuksena jokainen paketti kantaa myös edellisen kehyksen (redundanssi, noin 2 × 32 kbit/s). Vaihtoehto oli VOIP-tila ja sisäinen FEC, joka lisää look-aheadia 4 ms. Valinta tehtiin mittaamalla vaiheessa M3 (alla).
 
-**Mittaus M3 (`kuulu-bench fec-compare`) – EHDOTUS hallitukselle, ei vielä päätös.** 60 s synteettistä puhetta oikean kooderin ja jitter bufferin läpi simuloidulla kellolla, kaksi netem-hyppyä (puhuja → palvelin → kuulija), siemen 1. FEC:tä ajetaan VOIP-tilassa 32 kbit/s:n tavoitteella, ja kooderin odotettu häviö (`packet_loss_perc`) käydään läpi. Paikatuksi lasketaan vain kehys, joka soitetaan redundanttisesta kopiosta tai oikeasta FEC-datasta (LBRR, tarkistettu `opus_packet_has_lbrr`-kutsulla). Prosentit ovat soitetuista kehyksistä. "Johdolla" lisää jokaiseen pakettiin 68 tavua (Kuulun otsake 12, IPv4 20, UDP 8, QUIC noin 28); IPv6 lisää 20 tavua. Laatu on aaltomuotoon perustuva välimittari: lähteeseen verrattuna se rankaisee SILKiä, joten häviön vahinko mitataan saman tilan häviöttömään (lan) ajoon samoilla kooderiasetuksilla.
+**Mittaus M3 (`kuulu-bench fec-compare`).** 60 s synteettistä puhetta oikean kooderin ja jitter bufferin läpi simuloidulla kellolla, kaksi netem-hyppyä (puhuja → palvelin → kuulija), siemen 1. FEC:tä ajetaan VOIP-tilassa 32 kbit/s:n tavoitteella, ja kooderin odotettu häviö (`packet_loss_perc`) käydään läpi. Paikatuksi lasketaan vain kehys, joka soitetaan redundanttisesta kopiosta tai oikeasta FEC-datasta (LBRR, tarkistettu `opus_packet_has_lbrr`-kutsulla). Prosentit ovat soitetuista kehyksistä. "Johdolla" lisää jokaiseen pakettiin 68 tavua (Kuulun otsake 12, IPv4 20, UDP 8, QUIC noin 28); IPv6 lisää 20 tavua. Laatu on aaltomuotoon perustuva välimittari: lähteeseen verrattuna se rankaisee SILKiä, joten häviön vahinko mitataan saman tilan häviöttömään (lan) ajoon samoilla kooderiasetuksilla.
 
 | Profiili | Tila | Opus kbit/s | Johdolla kbit/s | Look-ahead | Paketteja, joissa FEC | Verkkohäviö | Paikattu | PLC | SNR häviöttömään | Huonot kehykset |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -130,7 +130,7 @@ Havainnot:
 - **Latenssi:** FEC:n VOIP-tila lisää 4 ms look-aheadia: budjetti nousisi 43,5 ms:stä 47,5 ms:iin. Redundanssi ei muuta budjettia.
 - **Huono mobiiliyhteys:** kumpikaan ei riitä: kaksi ±30 ms hyppyä tekee ±60 ms päästä päähän, mikä ylittää jitter bufferin 60 ms katon, ja suuri osa kehyksistä myöhästyy. Redundanssi on silti selvästi parempi (PLC 18 % vs. 22 % FEC 10 %:lla). **Hallitus 27.10.2026: noin 18 % piilotettuja (myöhästyneitä, ei hävinneitä) kehyksiä hyväksytään toistaiseksi; palataan asiaan M6:n mittauksissa.**
 
-**Ehdotus:** pidetään redundanssi oletuksena. Se paikkaa enemmän, paikkaa bitilleen oikein eikä muuta latenssibudjettia. Sen hinta on noin 34 kbit/s enemmän liikennettä johdolla, mikä on pelaajan yhteydelle vähän. FEC olisi järkevä vain, jos kaistasta tulee pullonkaula; silloin se vaatisi 4 ms lisää budjettiin ja kooderin odotetuksi häviöksi vähintään 6 %. Rajoitukset: synteettinen puhe, aaltomuotomittari, yksi siemen.
+**Päätös (hallitus 27.10.2026):** redundanssi on oletus, ja Opuksen sisäinen FEC hylätään v1:stä. FEC lisäisi 4 ms look-aheadia, kytkeytyy päälle vasta kun kooderin odotettu häviö on vähintään 6 %, ja paikkaa vähemmän kehyksiä kuin redundanssi. Redundanssin hinta on noin 34 kbit/s enemmän liikennettä johdolla. Mittauksen rajoitukset: synteettinen puhe, aaltomuotomittari, yksi siemen.
 
 **Reaaliaikasäännöt äänisäikeessä ja callbackeissa:** ei muistinvarausta, ei lukkoja, ei I/O:ta eikä lokitusta. Säikeiden välinen data kulkee vain lukottomilla rengaspuskureilla. Säännön noudattaminen varmistetaan testeissä (assert\_no\_alloc).
 
@@ -292,9 +292,9 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 - [x] Verkkoemulaattori ja häviöprofiilit
 - [x] Headless-client: kuulu-audio kytketty kuulu-clientiin (`kuulu_client::voice`)
 - [x] Hyväksymistesti: kaksi headless-clienttiä palvelimen ja kotiprofiilin läpi (`kuulu-client/tests/speech.rs`)
-- [ ] Mittaus: redundanssi vai Opus FEC; päätös kirjataan tähän dokumenttiin (mitattu, ehdotus kohdassa Pakettihäviöt odottaa päätöstä)
+- [x] Mittaus: redundanssi vai Opus FEC; päätös kirjataan tähän dokumenttiin (redundanssi, ks. Pakettihäviöt)
 
-**Valmis kun:** kaksi headless-clienttiä puhuu palvelimen kautta, ja kotiyhteysprofiililla puhe pysyy ymmärrettävänä jitter bufferin pysyessä enintään kahdessa kehyksessä.
+**Valmis kun:** kaksi headless-clienttiä puhuu palvelimen kautta, ja kotiyhteysprofiililla (1 % häviö ja ±5 ms jitter kummallakin hypyllä) puhe pysyy ymmärrettävänä jitter bufferin syvyyden 95. persentiilin pysyessä enintään kahdessa kehyksessä. Hallitus päätti tulkinnan 27.10.2026: kaksi ±5 ms hyppyä voi joillakin toistovaiheilla vaatia hetkellisesti kolmannen kehyksen (simuloidussa testissä 3/10 siemenestä, noin 6 % ajasta), joten raja koskee syvyyden 95. persentiiliä eikä tavoitteen maksimia. Kriteeri tarkistetaan simuloidulla kellolla (`voice::tests::home_profile_keeps_jitter_buffer_within_two_frames`), reaaliaikainen QUIC-testi (`tests/speech.rs`) tarkistaa toimituksen ja laadun.
 
 ### M4 – Puheominaisuudet
 
@@ -377,7 +377,7 @@ Read it before starting any work.
 
 - [x] **Lisenssi:** AGPL-3.0-only (päätetty 27.10.2026). Pitää myös hostatut johdannaiset avoimina.
 - [ ] **Nimi:** tavaramerkkihaku, verkkotunnus ja GitHub-organisaatio.
-- [ ] **Pakettihäviöt:** redundanssi vai Opuksen sisäinen FEC; ratkaistaan mittaamalla vaiheessa M3. Mitattu; ehdotus (redundanssi) kohdassa Pakettihäviöt.
+- [x] **Pakettihäviöt:** redundanssi (päätetty 27.10.2026); Opuksen sisäinen FEC hylätty v1:stä. Perustelut kohdassa Pakettihäviöt.
 - [ ] **Koodiallekirjoitus:** Windows- ja macOS-sertifikaattien kustannukset ja kuka hallinnoi avaimia.
 - [ ] **Windowsin exclusive-tila:** vaatii oman WASAPI-toteutuksen cpalin rinnalle; v1 vai myöhemmin.
 - [ ] **Päästä päähän -salaus:** menetelmä ja aikataulu v1:n jälkeen.

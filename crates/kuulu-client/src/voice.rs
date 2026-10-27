@@ -584,8 +584,8 @@ mod tests {
     }
 
     /// M3 criterion (docs/PLAN.md): over the home profile the jitter buffer
-    /// stays within two frames. Ten seeds of 60 s, playout phases spread
-    /// over a frame.
+    /// stays within two frames (95th percentile of depth). Ten seeds of 60 s,
+    /// playout phases spread over a frame.
     #[test]
     fn home_profile_keeps_jitter_buffer_within_two_frames() {
         let source = kuulu_audio::quality::speech(60 * kuulu_audio::SAMPLE_RATE as usize);
@@ -602,7 +602,11 @@ mod tests {
             })
             .collect();
         for sim in &runs {
-            assert!(sim.max_target <= 2 && sim.p95_depth <= 2, "{runs:#?}");
+            // The criterion (board, 27.10.2026): p95 depth at most 2 frames.
+            // Two ±5 ms hops can need a third frame at some playout phases;
+            // the target bounds only catch regressions.
+            assert!(sim.p95_depth <= 2, "{runs:#?}");
+            assert!(sim.max_target <= 3 && sim.over_2 <= 0.10, "{runs:#?}");
         }
     }
 }
