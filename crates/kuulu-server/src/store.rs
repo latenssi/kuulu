@@ -112,6 +112,7 @@ mod tests {
         drop(store);
         let store = Store::open(&dir, path, Config::default()).unwrap();
         assert_eq!(store.banned().unwrap(), HashSet::from([[2; 32]]));
+        drop(store);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
