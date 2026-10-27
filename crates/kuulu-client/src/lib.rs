@@ -13,13 +13,15 @@ use kuulu_proto::control::{
 };
 use kuulu_proto::{HEADER_LEN, VoiceHeader, frame};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{fmt, io};
 use tokio::sync::watch;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MIN_BACKOFF: Duration = Duration::from_millis(250);
 const MAX_BACKOFF: Duration = Duration::from_secs(8);
+/// A session lasting this long counts as healthy and resets the backoff.
+const STABLE_SESSION: Duration = Duration::from_secs(10);
 
 /// A received voice packet. `header.sender` is the speaker's session id.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,7 +155,11 @@ impl Client {
     }
 
     /// Sends one encoded frame now. Never blocks or queues: while
-    /// disconnected, or when the link is congested, frames are dropped.
+    /// disconnected, or when the link is congested, frames are dropped, as
+    /// are packets over [`kuulu_proto::MAX_VOICE_PACKET`].
+    ///
+    /// Takes a lock and allocates, so never call it from the real-time audio
+    /// thread: hand frames to a network task through an rtrb ring buffer.
     pub fn send(&self, flags: u8, seq: u16, timestamp: u32, payload: &[u8]) {
         let State::Connected { conn, session_id } = &*self.state.borrow() else {
             return;
@@ -273,10 +279,19 @@ impl Link {
     }
 
     async fn maintain(self, mut session: Session, state: watch::Sender<State>) {
+        let mut backoff = MIN_BACKOFF;
         loop {
+            let started = Instant::now();
             session.closed().await;
             state.send_replace(State::Connecting);
-            let mut backoff = MIN_BACKOFF;
+            // A server that welcomes and then drops us must not cause a tight
+            // reconnect loop: only a session that lasted resets the backoff.
+            if started.elapsed() >= STABLE_SESSION {
+                backoff = MIN_BACKOFF;
+            } else {
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
             session = loop {
                 match self.connect().await {
                     Ok(session) => break session,

@@ -58,21 +58,36 @@ impl Identity {
         }
     }
 
-    /// Loads `cert.der` and `key.der` from `dir`, generating both if absent.
+    /// Loads `cert.der` and `key.der` from `dir`, generating both only when
+    /// both are absent. Never overwrites: a new certificate changes the
+    /// fingerprint, which breaks every client's pin and every invite.
     pub fn load_or_generate(dir: &Path) -> io::Result<Self> {
         let (cert_path, key_path) = (dir.join(CERT_FILE), dir.join(KEY_FILE));
+        let not_found = |r: &io::Result<_>| matches!(r, Err(e) if e.kind() == ErrorKind::NotFound);
         match (fs::read(&cert_path), fs::read(&key_path)) {
-            (Ok(cert), Ok(key)) => Ok(Self {
-                cert: cert.into(),
-                key: PrivatePkcs8KeyDer::from(key).into(),
-            }),
-            (Err(e), _) | (_, Err(e)) if e.kind() != ErrorKind::NotFound => Err(e),
-            _ => {
+            (Ok(cert), Ok(key)) => {
+                warn_if_readable_by_others(&key_path);
+                Ok(Self {
+                    cert: cert.into(),
+                    key: PrivatePkcs8KeyDer::from(key).into(),
+                })
+            }
+            (cert, key) if not_found(&cert) && not_found(&key) => {
                 let identity = Self::generate();
-                write_private(&key_path, identity.key.secret_der())?;
-                fs::write(&cert_path, &identity.cert)?;
+                write_new(&key_path, identity.key.secret_der())?;
+                write_new(&cert_path, &identity.cert)?;
                 Ok(identity)
             }
+            (Err(e), _) | (_, Err(e)) if e.kind() != ErrorKind::NotFound => Err(e),
+            _ => Err(io::Error::new(
+                ErrorKind::NotFound,
+                format!(
+                    "only one of {CERT_FILE} and {KEY_FILE} exists in {}; restore the \
+                     missing one, or delete both to create a new identity (this changes \
+                     the fingerprint and invalidates all invites)",
+                    dir.display()
+                ),
+            )),
         }
     }
 
@@ -81,13 +96,30 @@ impl Identity {
     }
 }
 
-fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
+/// Creates `path` readable only by the owner, failing if it already exists.
+fn write_new(path: &Path, data: &[u8]) -> io::Result<()> {
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     options.open(path)?.write_all(data)
 }
+
+#[cfg(unix)]
+fn warn_if_readable_by_others(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = fs::metadata(path)
+        && meta.permissions().mode() & 0o077 != 0
+    {
+        eprintln!(
+            "warning: {} is accessible by other users; run: chmod 600 {0}",
+            path.display()
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn warn_if_readable_by_others(_: &Path) {}
 
 #[cfg(test)]
 mod tests {
@@ -102,6 +134,17 @@ mod tests {
         let again = Identity::load_or_generate(&dir).unwrap();
         assert_eq!(first.fingerprint(), again.fingerprint());
         assert_eq!(first.fingerprint().len(), 64);
+
+        // One file missing must fail rather than replace the identity.
+        for file in [CERT_FILE, KEY_FILE] {
+            let saved = fs::read(dir.join(file)).unwrap();
+            fs::remove_file(dir.join(file)).unwrap();
+            let err = Identity::load_or_generate(&dir).err().unwrap();
+            assert!(err.to_string().contains("only one of"), "{err}");
+            fs::write(dir.join(file), saved).unwrap();
+        }
+        let again = Identity::load_or_generate(&dir).unwrap();
+        assert_eq!(first.fingerprint(), again.fingerprint());
 
         let path = dir.join("kuulu.toml");
         let config = Config::load_or_create(&path).unwrap();
