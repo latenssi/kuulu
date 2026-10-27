@@ -254,6 +254,18 @@ Client näyttää jatkuvasti RTT:n, pakettihäviön, jitter bufferin syvyyden ja
 
 **Muut testit:** yksikkötestit jitter bufferille, pakettiotsakkeelle ja kättelylle; pakettien jäsennyksen fuzzaus (cargo-fuzz); integraatiotesti, jossa palvelin ja kaksi headless-clienttiä ajetaan samassa prosessissa; kuormitustesti, jossa 100 simuloitua clienttiä puhuu yhtä aikaa.
 
+**Fuzzaus (M6).** `fuzz/`-hakemiston cargo-fuzz-kohteet: ääniotsake, redundanssin jako, ohjauskehykset (pituus ja `ClientMessage`/`ServerMessage`) ja `kuulu.toml`. Ne vaativat nightly-Rustin (`nix develop .#fuzz`). CI ajaa jokaista minuutin main-haaran muutoksille ja viikoittain. Ensimmäinen ajo kesti tunnin kohdetta kohden, eikä kaatumisia löytynyt. Työpöytäclientin kutsulinkkien jäsennystä ei fuzzata, koska se on Tauri-binäärissä.
+
+**Kuormitustesti (M6, `kuulu-bench load`).** Palvelinprosessi on sidottu yhteen ytimeen (`taskset -c 0`), ja 100 clienttiä on samalla koneella loopbackilla eri ytimillä. Jokainen puhuja lähettää 10 ms välein 93 tavun paketin (kaksi 40 tavun Opus-kehystä redundanssina). Viive mitataan lähetyksestä vastaanottoon, joten se sisältää myös molempien clienttien QUIC-pinot. Mittaus 27.10.2026, AMD Ryzen 7 5800X (VM), 30 s ikkuna:
+
+| Skenaario | Paketteja sisään / ulos /s | Häviö | Viive p50 / p99 / max | Palvelimen CPU |
+|---|---|---|---|---|
+| 10 kanavaa, 2 puhujaa kussakin | 2 000 / 18 000 | 0 % | 1,2 / 2,4 / 5,5 ms | 15 % |
+| 1 kanava, 4 puhujaa | 400 / 39 600 | 0 % | 1,0 / 2,7 / 4,5 ms | 15 % |
+| 1 kanava, kaikki 100 puhuvat | 10 000 / 132 000 | 87 % | 3,2 / 7,3 / 15,9 ms | 44 % |
+
+Tavoite täyttyy: tavallinen kuorma vie noin 15 % yhdestä ytimestä. Kun kaikki 100 puhuvat samassa kanavassa, palvelin pudottaa suunnitellusti vanhimmat kehykset, koska jonoon kuulijaa kohden mahtuu kehys neljältä puhujalta. Silloinkin palvelin käyttää alle puolet ytimestä. Testi löysi virheen: jonon mitoituksesta puuttui redundanssin pituustavu, joten jonoon mahtui vain kolme kehystä, ja neljän puhujan kanavassa hävisi 16 % paketeista. Rajoitukset: clientit ja palvelin jakavat koneen ja loopbackin, ja palvelimen CPU-aikaan lasketaan myös osa ytimen loopback-työstä. Pilvipalvelimen vCPU voi olla tätä hitaampi, mutta varaa on noin kuusinkertaisesti.
+
 ## Toteutusvaiheet
 
 Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja testattuun tilaan. Automaattinen päivitys rakennetaan toisena vaiheena, ennen ääntä, jotta jokainen testiversio päivittyy testaajille itsestään.
@@ -320,7 +332,7 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 
 - [ ] Laitteistomittaus ja vertailu Mumbleen, TeamSpeakiin ja Discordiin
 - [ ] Huono mobiiliyhteys: noin 18 % myöhästyneitä kehyksiä hyväksyttiin M3:ssa toistaiseksi (jitter bufferin 60 ms katto); arvioidaan uudelleen
-- [ ] Fuzzaus ja kuormitustesti 100 clientillä
+- [x] Fuzzaus ja kuormitustesti 100 clientillä
 - [ ] Docker-image, docker-compose ja palvelimen asennusohje
 - [ ] Julkinen 0.1.0-beta
 
