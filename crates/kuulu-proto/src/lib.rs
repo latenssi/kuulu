@@ -6,6 +6,7 @@
 
 pub mod frame;
 mod header;
+pub mod identity;
 pub mod redundancy;
 mod version;
 
@@ -15,6 +16,15 @@ pub use version::{MIN_PROTOCOL_VERSION, PROTOCOL_VERSION, alpn_protocols, negoti
 /// Protobuf control messages (`proto/control.proto`).
 pub mod control {
     include!(concat!(env!("OUT_DIR"), "/kuulu.control.rs"));
+}
+
+/// QUIC application close codes the server uses. Clients must not reconnect
+/// automatically after either.
+pub mod close {
+    /// An admin kicked this session.
+    pub const KICKED: u32 = 1;
+    /// An admin banned this identity; reconnecting gets `Reject(BANNED)`.
+    pub const BANNED: u32 = 2;
 }
 
 /// Default server UDP port.

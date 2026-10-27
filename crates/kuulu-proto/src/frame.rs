@@ -64,4 +64,26 @@ mod tests {
         let mut r = &[5, 0, 0, 0, 1][..];
         assert!(read::<ServerMessage>(&mut r).await.is_err());
     }
+
+    /// Fields only ever get added: messages from older and newer peers decode.
+    #[test]
+    fn additive_compatibility() {
+        use crate::control::{ClientMessage, client_message::Msg};
+        // A Hello from before display_name and identity_proof existed.
+        let old = [0x0a, 0x04, 0x08, 0x01, 0x10, 0x01];
+        let msg = ClientMessage::decode(&old[..]).unwrap();
+        let Some(Msg::Hello(hello)) = &msg.msg else {
+            panic!("{msg:?}")
+        };
+        assert_eq!(hello.protocol_version, 1);
+        assert!(hello.display_name.is_empty() && hello.identity_proof.is_empty());
+
+        // A newer message with an unknown field (99) and an unknown oneof case (50).
+        let mut newer = old.to_vec();
+        newer.extend([0x98, 0x06, 0x07]);
+        assert_eq!(ClientMessage::decode(&newer[..]).unwrap().msg, msg.msg);
+        let unknown = [0x92, 0x03, 0x00, 0x78, 0x05];
+        let msg = ClientMessage::decode(&unknown[..]).unwrap();
+        assert_eq!((msg.msg, msg.request_id), (None, 5));
+    }
 }

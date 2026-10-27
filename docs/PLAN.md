@@ -75,11 +75,14 @@ Budjetti on 43,5 ms suusta korvaan, kun verkon yhdensuuntainen viive on 11 ms (R
 | Vaihe | Viive (ms) | Miten |
 | --- | --- | --- |
 | Capture-puskuri | 5 | 240 näytettä, 48 kHz |
-| Opus-koodaus | 12,5 | 10 ms kehys + 2,5 ms look-ahead (low-delay-tila) |
+| Kehystys | 5 | 10 ms kehys; loput 5 ms menee päällekkäin capturen kanssa |
+| Opus look-ahead | 2,5 | Low-delay-tila, 120 näytettä |
 | Verkko | 11 | Yhdensuuntainen, palvelimen kautta |
 | Jitter buffer | 10 | Adaptiivinen, tavoite yksi kehys |
-| Playback-puskuri | 5 | 240 näytettä, 48 kHz |
+| Playback | 10 | 5 ms rengaspuskurin odotus + 5 ms laitteen jakso (240 näytettä) |
 | **Yhteensä** | **43,5** |  |
+
+Rivijako vastaa `kuulu-bench latency` -mittausta (pahin tapaus, simuloitu kello); päivitetty 27.10.2026, summa ennallaan. Laitteiden ja ajurien oma viive mitataan vaiheessa M6.
 
 Kohinanpoisto lisää noin 10 ms, joten se on oletuksena pois päältä ja sen viive näytetään erikseen.
 
@@ -155,8 +158,14 @@ Palvelin ei pura ääntä. Se tarkistaa lähettäjän, kirjoittaa sender-kentän
 **Kättely:**
 
 1. Client avaa yhteyden ALPN-tunnisteella `kuulu/<pääversio>`.
-2. Client lähettää `Hello`: protokollan versio, pienin tuettu versio, sovelluksen versio, ominaisuuslista, julkinen avain ja kutsutunniste.
-3. Palvelin vastaa `Welcome` (session-id, palvelimen versio, kanavat ja jäsenet) tai `Reject` syineen: liian vanha, liian uusi, kutsu vanhentunut, bannattu.
+2. Client lähettää `Hello`: protokollan versio, pienin tuettu versio, sovelluksen versio, ominaisuuslista, julkinen avain, kutsutunniste, näyttönimi ja avaimen hallussapidon todiste (`identity_proof`, katso Identiteetti ja turvallisuus).
+3. Palvelin vastaa `Welcome` (session-id, palvelimen nimi ja versio, sovittu protokollaversio, palvelimen ominaisuuslista, kanavat ja jäsenet) tai `Reject` syineen: liian vanha, liian uusi, kutsu vanhentunut, bannattu, virheellinen identiteetti, palvelin täynnä. Täysi palvelin ei pysäytä clienttiä, vaan se yrittää myöhemmin uudelleen.
+
+Julkinen avain ja sen todiste tulivat pakollisiksi protokollan pääversioon 1 ennen ensimmäistä julkaisua. Avaimettomia M3-vaiheen clienttejä ei ole käytössä, joten pääversiota ei nostettu.
+
+**Ohjausviestit kättelyn jälkeen:** jokaisessa clientin viestissä on `request_id`, ja palvelin vastaa jokaiseen `Response`-viestillä (OK, FORBIDDEN, NOT_FOUND tai INVALID). Pyynnöt ovat `JoinChannel`, `SetVoiceState` (oma mykistys ja kuulokkeiden mykistys) sekä ylläpitäjälle `CreateChannel`, `DeleteChannel`, `RenameChannel`, `MoveMember`, `Kick` ja `Ban`. Palvelin lähettää kaikille tapahtumat `MemberJoined`, `MemberLeft`, `MemberUpdated` (nimi, kanava, mykistys, kuulokkeiden mykistys), `ChannelCreated`, `ChannelDeleted` ja `ChannelRenamed` samassa järjestyksessä kuin se teki muutokset, ja vastaus tulee aina sen aiheuttamien tapahtumien jälkeen. Potku ja banni sulkevat yhteyden QUIC-sovelluskoodilla 1 (potkittu) tai 2 (bannattu), eikä client silloin yhdistä uudelleen itsestään.
+
+**Mykistys palvelimella:** palvelin pudottaa mykistetyn jäsenen äänipaketit eikä lähetä ääntä kuulokkeensa mykistäneelle. Kuulokkeiden mykistys mykistää myös mikrofonin. Uudelleenyhdistyksen jälkeen client palauttaa kanavansa ja mykistyksensä itse.
 
 **Versiointi:** palvelin tukee nykyistä ja edellistä protokollan pääversiota. Pienet lisäykset kulkevat ominaisuuslistan kautta, ja tuntemattomat protobuf-kentät ohitetaan. Kun palvelin on liian vanha, client näyttää selkeän viestin eikä yritä yhdistää uudelleen silmukassa.
 
@@ -164,8 +173,10 @@ Palvelin ei pura ääntä. Se tarkistaa lähettäjän, kirjoittaa sender-kentän
 
 `kuulu-server` on yksi binääri, joka jaetaan myös Docker-imagena (`ghcr.io/<org>/kuulu-server:<versio>`). Käynnistykseen riittää yksi komento ja yksi avoin UDP-portti.
 
-- **Konfiguraatio:** `kuulu.toml`: palvelimen nimi, portti, kanavat ja ylläpitäjien julkiset avaimet. Ensimmäinen käynnistys luo oletuskonfiguraation ja tulostaa ylläpitäjän kutsulinkin.
-- **Tila:** yhdistetyt sessiot ja kanavat pidetään muistissa. SQLiteen tallentuvat tunnetut identiteetit, roolit, bannit ja kutsut.
+- **Konfiguraatio:** `kuulu.toml`: palvelimen nimi, portti, käyttäjien enimmäismäärä (`max_users`, oletus 100), ylläpitäjien julkiset avaimet heksana ja aloituskanavat. Ensimmäinen käynnistys luo oletuskonfiguraation ja tulostaa ylläpitäjän kutsulinkin. Palvelin vain lukee tiedostoa; tyhjä tai virheellinen tiedosto on virhe eikä johda oletusarvoihin.
+- **Kanavat:** `[[channels]]` luo kanavat vain ensimmäisellä käynnistyksellä. Sen jälkeen kanavat ovat SQLitessä, ja ylläpitäjät hallitsevat niitä clientistä; tiedoston kanavien muokkaus ei enää vaikuta. Kanavan id on pysyvä eikä sitä käytetä uudelleen. Jäsenet liittyvät pienimmän id:n kanavaan. Kanavia on enintään 64.
+- **Tila:** yhdistetyt sessiot pidetään muistissa, ja muistissa oleva tila on määräävä. SQLiteen (`kuulu.db`, WAL-tila) tallentuvat kanavat, bannit, kutsut ja tunnetut identiteetit (enintään 10 000 viimeksi nähtyä). Kirjoitukset tehdään omassa säikeessään, joten levy ei koskaan hidasta äänen välitystä. Roolit tulevat `kuulu.toml`:n ylläpitäjäavaimista.
+- **Kokorajat:** `max_users` rajataan niin, että pahimman tapauksen `Welcome` (pisimmät nimet, kaikki kanavat) mahtuu yhteen 64 KiB:n ohjauskehykseen. Raja tarkistetaan käännösaikana, ja se on nyt 374 käyttäjää.
 - **Kutsut:** ylläpitäjä luo kutsun clientistä tai komentoriviltä (`kuulu-server invite --uses 10 --expires 7d`). Kutsulla on satunnainen tunniste, voimassaoloaika ja käyttökertojen enimmäismäärä.
 - **Oikeudet v1:** ylläpitäjä ja jäsen. Ylläpitäjä voi luoda ja poistaa kanavia, siirtää, potkia ja bannata käyttäjiä.
 - **Yksityisyys:** ei äänen tallennusta eikä sisällön lokitusta. Lokeihin kirjataan vain yhteystapahtumat.
@@ -221,10 +232,12 @@ Päivitys rakennetaan heti ensimmäiseen versioon (vaihe M1), jotta jokainen my�
 
 Käyttäjän identiteetti on clientin ensimmäisellä käynnistyksellä luoma ed25519-avainpari. Salasanoja ja tilejä ei ole. Palvelin tunnistaa käyttäjän julkisesta avaimesta, ja näyttönimen saa valita vapaasti.
 
+- **Avaimen hallussapito:** client allekirjoittaa yhteyden TLS-istunnosta johdetun 32 tavun arvon (TLS exporter, nimiö `EXPORTER-kuulu-identity`, konteksti julkinen avain) ja lähettää allekirjoituksen `Hello`-viestissä. Arvo on eri jokaisessa TLS-istunnossa, joten kaapattu `Hello` ei kelpaa toisella yhteydellä. Puuttuva tai väärä todiste hylätään syyllä virheellinen identiteetti.
+
 - **Kuljetus:** QUIC ja TLS 1.3. Itse allekirjoitettu palvelinsertifikaatti on sallittu, koska kutsulinkki kantaa sen SHA-256-sormenjäljen ja client kiinnittää sen. Verkkotunnuksellinen palvelin voi käyttää myös Let's Encrypt -sertifikaattia.
 - **Kutsut:** 128-bittinen satunnainen tunniste, voimassaoloaika ja käyttökertojen enimmäismäärä.
 - **Ei päästä päähän -salausta v1:ssä.** Palvelin näkee Opus-paketit, vaikka ei pura eikä tallenna niitä. Tämä kerrotaan käyttäjille avoimesti, ja E2E-salaus on myöhemmän version tavoite.
-- **Väärinkäytön esto:** palvelin rajoittaa jokaisen yhteyden datagrammimäärää (oletus 120 pakettia sekunnissa) ja hylkää paketit, joiden lähettäjä ei kuulu kanavaan.
+- **Väärinkäytön esto:** palvelin rajoittaa jokaisen yhteyden datagrammimäärää (oletus 120 pakettia sekunnissa) ja hylkää paketit, joiden lähettäjä ei kuulu kanavaan. Ohjauspyyntöjä saa lähettää 20 sekunnissa (purske 10); ylittäjän yhteys suljetaan. Samasta IP-osoitteesta hyväksytään 2 uutta yhteyttä sekunnissa (purske 10), ylimääräiset hylätään ennen TLS-kättelyä. Näyttö- ja kanavanimistä poistetaan ohjausmerkit ja näkymättömät muotoilumerkit (Unicode Cf, esim. suunnanvaihtomerkit), ja ne rajataan 32 merkkiin.
 - **Riippuvuudet:** cargo-deny ja cargo-audit ajetaan CI:ssä jokaiselle muutokselle.
 - **Päivitykset** on allekirjoitettu (katso edellinen osio).
 
@@ -255,10 +268,10 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 
 ### M1 – Itsestään päivittyvä kuori
 
-- [ ] Tauri 2 + Svelte -sovellus, joka näyttää versionumeron
-- [ ] Updater-plugin: julkinen avain konfiguraatiossa, stable- ja beta-osoitteet
+- [x] Tauri 2 + Svelte -sovellus, joka näyttää versionumeron
+- [x] Updater-plugin: julkinen avain konfiguraatiossa, stable- ja beta-osoitteet
 - [ ] Julkaisuworkflow: tagista allekirjoitettu build kolmelle alustalle, release-luonnos ja päivitystiedosto
-- [ ] Julkaisuohje docs/RELEASING.md
+- [x] Julkaisuohje docs/RELEASING.md
 
 **Valmis kun:** asennettu v0.0.1 päivittyy itsestään versioon v0.0.2 Windowsilla, macOS:llä ja Linuxilla.
 
@@ -285,10 +298,11 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 
 ### M4 – Puheominaisuudet
 
-- [ ] Useat kanavat ja kanavan vaihto
+- [x] Useat kanavat ja kanavan vaihto
 - [ ] Push-to-talk globaalilla näppäimellä ja VAD
-- [ ] Mykistys, kuulokkeiden mykistys ja käyttäjäkohtainen äänenvoimakkuus
-- [ ] Ylläpitäjän toiminnot: kanavien hallinta, siirto, potku ja banni
+- [x] Mykistys ja kuulokkeiden mykistys
+- [ ] Käyttäjäkohtainen äänenvoimakkuus
+- [x] Ylläpitäjän toiminnot: kanavien hallinta, siirto, potku ja banni
 
 **Valmis kun:** neljä käyttäjää puhuu samassa kanavassa, ja kaikki kontrollit toimivat kolmella alustalla.
 
