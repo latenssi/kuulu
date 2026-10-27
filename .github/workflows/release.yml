@@ -133,7 +133,7 @@ jobs:
   # Holds the updater key. Runs only the locked Tauri CLI, jq and gh.
   sign:
     needs: build
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     environment: release
     permissions:
