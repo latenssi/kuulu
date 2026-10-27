@@ -8,6 +8,8 @@ pub mod device;
 mod framer;
 mod jitter;
 mod mixer;
+#[cfg(test)]
+mod no_alloc_tests;
 
 pub use codec::{Decoder, Encoder, MAX_PAYLOAD};
 pub use framer::Framer;
