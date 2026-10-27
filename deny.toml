@@ -11,6 +11,7 @@ unused-allowed-license = "allow"
 allow = [
     "AGPL-3.0-only",
     "Apache-2.0",
+    "BSD-1-Clause",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
@@ -22,6 +23,8 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace-internal path dependencies (all crates are publish = false).
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
