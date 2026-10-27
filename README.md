@@ -16,7 +16,8 @@ the full plan and milestones.
 - `crates/kuulu-bench` – latency measurement and network emulator
 - `apps/desktop` – Tauri 2 + Svelte desktop app
 
-Releases and auto-update: [docs/RELEASING.md](docs/RELEASING.md).
+Running a server: [docs/SERVER.md](docs/SERVER.md). Releases and
+auto-update: [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Development
 
