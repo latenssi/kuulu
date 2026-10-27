@@ -85,12 +85,13 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: protoc,cargo-fuzz
-      - run: cargo fuzz build -a
+      # The prebuilt cargo-fuzz is a musl binary and would default to musl.
+      - run: cargo fuzz build -a --target x86_64-unknown-linux-gnu
       # New inputs go to a scratch corpus; the committed seeds stay as they are.
       - run: |
           for target in $(cargo fuzz list); do
             mkdir -p "/tmp/corpus/$target"
-            cargo fuzz run -a "$target" "/tmp/corpus/$target" "fuzz/corpus/$target" -- -max_total_time=60
+            cargo fuzz run -a --target x86_64-unknown-linux-gnu "$target" "/tmp/corpus/$target" "fuzz/corpus/$target" -- -max_total_time=60
           done
       - uses: actions/upload-artifact@v4
         if: failure()
