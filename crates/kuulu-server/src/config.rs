@@ -1,16 +1,32 @@
 //! Server state on disk: `kuulu.toml`, plus the TLS certificate and key.
 //! Each is created with defaults on first run.
 
+use kuulu_proto::identity::{PublicKey, parse_public_key};
 use quinn::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::io::{self, Write};
 use std::path::Path;
 use std::{fs, io::ErrorKind};
 
-#[derive(Debug, Serialize, Deserialize)]
+/// `kuulu.toml`. Missing fields take their defaults. The server rewrites the
+/// file when admins change channels, so comments in it are not kept.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub name: String,
     pub port: u16,
+    /// Hex Ed25519 public keys of administrators.
+    pub admins: Vec<String>,
+    /// At least one; members join the first.
+    pub channels: Vec<ChannelConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelConfig {
+    /// Stable across restarts; unique and not 0.
+    pub id: u32,
+    pub name: String,
 }
 
 impl Default for Config {
@@ -18,6 +34,11 @@ impl Default for Config {
         Self {
             name: "Kuulu".into(),
             port: kuulu_proto::DEFAULT_PORT,
+            admins: Vec::new(),
+            channels: vec![ChannelConfig {
+                id: 1,
+                name: "General".into(),
+            }],
         }
     }
 }
@@ -26,16 +47,53 @@ impl Config {
     pub fn load_or_create(path: &Path) -> io::Result<Self> {
         match fs::read_to_string(path) {
             Ok(text) => {
-                toml::from_str(&text).map_err(|e| io::Error::new(ErrorKind::InvalidData, e))
+                let config: Self = toml::from_str(&text).map_err(invalid)?;
+                config.admin_keys()?;
+                config.check_channels()?;
+                Ok(config)
             }
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 let config = Self::default();
-                fs::write(path, toml::to_string(&config).map_err(io::Error::other)?)?;
+                config.save(path)?;
                 Ok(config)
             }
             Err(e) => Err(e),
         }
     }
+
+    /// Replaces the file atomically, so a crash never leaves half a config.
+    pub fn save(&self, path: &Path) -> io::Result<()> {
+        let tmp = path.with_extension("toml.tmp");
+        fs::write(&tmp, toml::to_string(self).map_err(io::Error::other)?)?;
+        fs::rename(tmp, path)
+    }
+
+    pub(crate) fn admin_keys(&self) -> io::Result<HashSet<PublicKey>> {
+        self.admins
+            .iter()
+            .map(|hex| {
+                parse_public_key(hex)
+                    .ok_or_else(|| invalid(format!("admins: {hex:?} is not a hex public key")))
+            })
+            .collect()
+    }
+
+    fn check_channels(&self) -> io::Result<()> {
+        let mut seen = HashSet::new();
+        for c in &self.channels {
+            if c.id == 0 || !seen.insert(c.id) {
+                return Err(invalid(format!("channels: id {} is 0 or used twice", c.id)));
+            }
+        }
+        if seen.is_empty() {
+            return Err(invalid("channels: at least one is needed"));
+        }
+        Ok(())
+    }
+}
+
+fn invalid(e: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
+    io::Error::new(ErrorKind::InvalidData, e)
 }
 
 /// Self-signed TLS identity. Clients pin its [`Identity::fingerprint`], so it
@@ -149,8 +207,18 @@ mod tests {
         let path = dir.join("kuulu.toml");
         let config = Config::load_or_create(&path).unwrap();
         assert_eq!(config.port, kuulu_proto::DEFAULT_PORT);
+        // A config from before channels and admins existed.
         fs::write(&path, "name = \"x\"\nport = 1\n").unwrap();
-        assert_eq!(Config::load_or_create(&path).unwrap().port, 1);
+        let config = Config::load_or_create(&path).unwrap();
+        assert_eq!((config.port, config.channels.len()), (1, 1));
+        for bad in [
+            "admins = [\"00\"]",
+            "channels = []",
+            "[[channels]]\nid = 2\nname = \"a\"\n[[channels]]\nid = 2\nname = \"b\"",
+        ] {
+            fs::write(&path, bad).unwrap();
+            assert!(Config::load_or_create(&path).is_err(), "{bad}");
+        }
 
         fs::remove_dir_all(&dir).unwrap();
     }
