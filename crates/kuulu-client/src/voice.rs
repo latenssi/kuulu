@@ -329,6 +329,7 @@ fn send_newest(ring: &mut rtrb::Consumer<Packet>, send: &mut impl FnMut(&Packet)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::netem::{Link, Profile};
     use assert_no_alloc::{AllocDisabler, assert_no_alloc};
     use std::sync::mpsc;
 
@@ -528,5 +529,80 @@ mod tests {
             at(100)
         );
         assert!(hops.len() >= 290 && at(50) < Duration::from_millis(2));
+    }
+
+    /// What one simulated run measured at the listener.
+    #[derive(Debug)]
+    struct Sim {
+        max_target: usize,
+        /// Share of frames played with a target above 2.
+        over_2: f64,
+        p95_depth: usize,
+        mean_depth: f64,
+        concealed: f64,
+    }
+
+    /// The talker's frames cross two hops of `profile` (talker to server,
+    /// server to listener) drawn by netem's own [`Link`], on a simulated
+    /// clock: no runner scheduling, the same result on every machine. The
+    /// listener plays a frame every 10 ms, `phase` after each capture.
+    fn simulate(source: &[f32], profile: Profile, seed: u64, phase: Duration) -> Sim {
+        let (mut talker, mut sent, ..) = voice();
+        let (mut listener, _, mut network, _) = voice();
+        let (mut up, mut down) = (Link::new(profile, seed), Link::new(profile, seed + 1));
+        let mut in_flight: Vec<(Duration, Packet)> = Vec::new();
+        let (mut max_target, mut over_2, mut depths) = (0, 0, Vec::new());
+        let mut out = [0.0; FRAME_SAMPLES];
+        for (i, frame) in source.as_chunks().0.iter().enumerate() {
+            let now = Duration::from_millis(10) * i as u32;
+            talker.capture(frame);
+            let packet = from(1, &sent.pop().unwrap());
+            if let (Some(a), Some(b)) = (up.delay(), down.delay()) {
+                in_flight.push((now + a + b, packet));
+            }
+            in_flight.sort_by_key(|p| p.0);
+            let due = in_flight.partition_point(|p| p.0 <= now + phase);
+            for (_, packet) in in_flight.drain(..due) {
+                network.push(packet).ok().unwrap();
+            }
+            listener.play(&mut out);
+            let s = listener.stats();
+            max_target = max_target.max(s.jitter_target);
+            over_2 += usize::from(s.jitter_target > 2);
+            depths.push(s.jitter_depth);
+        }
+        let s = listener.stats();
+        let mean_depth = depths.iter().sum::<usize>() as f64 / depths.len() as f64;
+        depths.sort();
+        Sim {
+            max_target,
+            over_2: over_2 as f64 / depths.len() as f64,
+            p95_depth: depths[depths.len() * 95 / 100],
+            mean_depth,
+            concealed: s.concealed as f64 / (s.decoded + s.concealed) as f64,
+        }
+    }
+
+    /// M3 criterion (docs/PLAN.md): over the home profile the jitter buffer
+    /// stays within two frames. Ten seeds of 60 s, playout phases spread
+    /// over a frame.
+    #[test]
+    fn home_profile_keeps_jitter_buffer_within_two_frames() {
+        let source = kuulu_audio::quality::speech(60 * kuulu_audio::SAMPLE_RATE as usize);
+        let runs: Vec<_> = (1..=10u64)
+            .map(|seed| {
+                let phase = Duration::from_millis(seed % 10);
+                let sim = simulate(&source, Profile::HOME, seed * 2, phase);
+                println!(
+                    "seed {seed}, phase {phase:?}: target max {} (above 2 for {:.3} of \
+                     frames), depth p95 {} mean {:.2}, concealed {:.4}",
+                    sim.max_target, sim.over_2, sim.p95_depth, sim.mean_depth, sim.concealed
+                );
+                sim
+            })
+            .collect();
+        for sim in &runs {
+            assert!(sim.max_target <= 2 && sim.p95_depth <= 2, "{runs:#?}");
+        }
     }
 }
