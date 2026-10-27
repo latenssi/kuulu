@@ -12,7 +12,7 @@
 //! layout in [`redundancy`]). A lost frame is played from the next packet's
 //! copy when that arrives in time, and concealed with Opus PLC otherwise.
 
-use crate::Client;
+use crate::{Client, Event};
 use kuulu_audio::{
     Decoder, Encoder, FRAME_SAMPLES, Frame, JitterBuffer, Mixer, STOP_AFTER_MISSING,
 };
@@ -36,6 +36,8 @@ const OUTGOING: usize = 8;
 const MAX_SEND_AGE: Duration = Duration::from_millis(10);
 /// Received packets waiting for the next [`Voice::play`].
 const INCOMING: usize = 64;
+/// Session ids of members who left, waiting for the next [`Voice::play`].
+const LEFT: usize = 64;
 
 /// Counters since start; jitter figures are the largest over active senders.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -78,10 +80,12 @@ pub struct Voice {
     outgoing: rtrb::Producer<Packet>,
     sender: Thread,
     incoming: rtrb::Consumer<Packet>,
+    left: rtrb::Consumer<u32>,
     peers: Box<[Peer]>,
     mixer: Mixer,
     stats: Stats,
-    receiver: Option<tokio::task::AbortHandle>,
+    /// Network tasks, stopped on drop.
+    tasks: Vec<tokio::task::AbortHandle>,
 }
 
 impl Voice {
@@ -90,11 +94,26 @@ impl Voice {
     pub fn start(client: Arc<Client>) -> io::Result<Self> {
         let (outgoing, to_send) = rtrb::RingBuffer::<Packet>::new(OUTGOING);
         let (mut received, incoming) = rtrb::RingBuffer::<Packet>::new(INCOMING);
+        let (mut leaving, left) = rtrb::RingBuffer::<u32>::new(LEFT);
         let send_client = client.clone();
         let sender = spawn_sender(to_send, move |p| {
             let h = p.header;
             send_client.send(h.flags, h.seq, h.timestamp, &p.payload[..p.len]);
         })?;
+        let mut events = client.events();
+        let members = tokio::spawn(async move {
+            use tokio::sync::broadcast::error::RecvError;
+            loop {
+                match events.recv().await {
+                    Ok(Event::MemberLeft(m)) => {
+                        let _ = leaving.push(m.session_id);
+                    }
+                    // Missed leaves are caught by idle eviction instead.
+                    Ok(_) | Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => return,
+                }
+            }
+        });
         let receiver = tokio::spawn(async move {
             while let Ok(p) = client.recv().await {
                 let len = p.payload.len();
@@ -112,8 +131,8 @@ impl Voice {
                 }
             }
         });
-        let mut voice = Self::new(outgoing, sender.thread().clone(), incoming);
-        voice.receiver = Some(receiver.abort_handle());
+        let mut voice = Self::new(outgoing, sender.thread().clone(), incoming, left);
+        voice.tasks = vec![receiver.abort_handle(), members.abort_handle()];
         Ok(voice)
     }
 
@@ -121,6 +140,7 @@ impl Voice {
         outgoing: rtrb::Producer<Packet>,
         sender: Thread,
         incoming: rtrb::Consumer<Packet>,
+        left: rtrb::Consumer<u32>,
     ) -> Self {
         let peers = (0..MAX_PEERS)
             .map(|_| Peer {
@@ -140,10 +160,11 @@ impl Voice {
             outgoing,
             sender,
             incoming,
+            left,
             peers,
             mixer: Mixer::new(),
             stats: Stats::default(),
-            receiver: None,
+            tasks: Vec::new(),
         }
     }
 
@@ -182,6 +203,11 @@ impl Voice {
 
     /// Produces the next frame of received voice into `out`. Real-time safe.
     pub fn play(&mut self, out: &mut Frame) {
+        while let Ok(id) = self.left.pop() {
+            for peer in self.peers.iter_mut().filter(|p| p.id == id) {
+                peer.idle = FORGET_AFTER;
+            }
+        }
         while let Ok(packet) = self.incoming.pop() {
             self.receive(&packet);
         }
@@ -235,11 +261,9 @@ impl Voice {
         peer.idle = 0;
     }
 
-    /// The sender's slot. A new sender takes the longest idle slot if that
-    /// one's stream has stopped (see [`STOP_AFTER_MISSING`]); `None` if all
-    /// senders are still talking.
-    // TODO(M4): also free a slot when the control stream reports that its
-    // member left; needs the events API (PR #6), not reachable from here yet.
+    /// The sender's slot. A new sender takes a slot freed by a member who
+    /// left, or else the longest idle one if that stream has stopped (see
+    /// [`STOP_AFTER_MISSING`]); `None` if all senders are still talking.
     fn peer(&mut self, id: u32) -> Option<&mut Peer> {
         if let Some(i) = self
             .peers
@@ -261,8 +285,8 @@ impl Voice {
 
 impl Drop for Voice {
     fn drop(&mut self) {
-        if let Some(receiver) = &self.receiver {
-            receiver.abort();
+        for task in &self.tasks {
+            task.abort();
         }
     }
 }
@@ -312,11 +336,19 @@ mod tests {
     static ALLOC: AllocDisabler = AllocDisabler;
 
     /// A Voice whose network side is the test: returns it with the ring of
-    /// packets it sends and the ring that delivers packets to it.
-    fn voice() -> (Voice, rtrb::Consumer<Packet>, rtrb::Producer<Packet>) {
+    /// packets it sends, the ring that delivers packets to it and the one
+    /// that reports members leaving.
+    fn voice() -> (
+        Voice,
+        rtrb::Consumer<Packet>,
+        rtrb::Producer<Packet>,
+        rtrb::Producer<u32>,
+    ) {
         let (out_tx, out_rx) = rtrb::RingBuffer::new(OUTGOING);
         let (in_tx, in_rx) = rtrb::RingBuffer::new(INCOMING);
-        (Voice::new(out_tx, thread::current(), in_rx), out_rx, in_tx)
+        let (left_tx, left_rx) = rtrb::RingBuffer::new(LEFT);
+        let voice = Voice::new(out_tx, thread::current(), in_rx, left_rx);
+        (voice, out_rx, in_tx, left_tx)
     }
 
     fn tone(i: usize) -> Frame {
@@ -343,8 +375,8 @@ mod tests {
     /// frames late; 100 is lost, but 101 comes a frame early and fills it.
     #[test]
     fn audio_thread_does_not_allocate() {
-        let (mut talker, mut sent, _) = voice();
-        let (mut listener, _, mut network) = voice();
+        let (mut talker, mut sent, ..) = voice();
+        let (mut listener, _, mut network, _) = voice();
         let mut delayed: [Option<Packet>; 4] = std::array::from_fn(|_| None);
         let mut out = [0.0; FRAME_SAMPLES];
         assert_no_alloc(|| {
@@ -380,8 +412,8 @@ mod tests {
 
     #[test]
     fn reconnecting_senders_take_over_stopped_slots() {
-        let (mut talker, mut sent, _) = voice();
-        let (mut listener, _, mut network) = voice();
+        let (mut talker, mut sent, ..) = voice();
+        let (mut listener, _, mut network, _) = voice();
         let mut out = [0.0; FRAME_SAMPLES];
         let mut tick = |ids: &[u32], listener: &mut Voice| {
             talker.capture(&tone(0));
@@ -408,8 +440,36 @@ mod tests {
     }
 
     #[test]
+    fn member_who_left_frees_the_slot_at_once() {
+        let (mut talker, mut sent, ..) = voice();
+        let (mut listener, _, mut network, mut leaving) = voice();
+        let mut out = [0.0; FRAME_SAMPLES];
+        let old: Vec<u32> = (1..=16).collect();
+        for i in 0..20 {
+            talker.capture(&tone(i));
+            let packet = sent.pop().unwrap();
+            for &id in &old {
+                network.push(from(id, &packet)).ok().unwrap();
+            }
+            listener.play(&mut out);
+        }
+        // Member 3 leaves and 17 starts talking right away, while the others
+        // are still talking.
+        leaving.push(3).unwrap();
+        talker.capture(&tone(20));
+        let packet = sent.pop().unwrap();
+        for id in old.iter().copied().filter(|&id| id != 3).chain([17]) {
+            network.push(from(id, &packet)).ok().unwrap();
+        }
+        listener.play(&mut out);
+        let mut expected: Vec<u32> = old.into_iter().filter(|&id| id != 3).collect();
+        expected.push(17);
+        assert_eq!(holders(&listener), expected);
+    }
+
+    #[test]
     fn malformed_packets_do_not_keep_a_slot() {
-        let (mut listener, _, mut network) = voice();
+        let (mut listener, _, mut network, _) = voice();
         let bad = Packet {
             header: VoiceHeader {
                 flags: flags::REDUNDANT,
@@ -428,7 +488,7 @@ mod tests {
 
     #[test]
     fn stalled_sender_sends_fresh_audio_not_old() {
-        let (mut talker, mut ring, _) = voice();
+        let (mut talker, mut ring, ..) = voice();
         let mut sent = Vec::new();
         for i in 0..10 {
             talker.capture(&tone(i)); // ring holds 8: the last 2 are dropped
@@ -449,7 +509,8 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let sender = spawn_sender(ring, move |p| tx.send(p.at.elapsed()).unwrap()).unwrap();
         let (_, incoming) = rtrb::RingBuffer::new(INCOMING);
-        let mut voice = Voice::new(outgoing, sender.thread().clone(), incoming);
+        let (_, left) = rtrb::RingBuffer::new(LEFT);
+        let mut voice = Voice::new(outgoing, sender.thread().clone(), incoming, left);
         for i in 0..300 {
             voice.capture(&tone(i));
             thread::sleep(Duration::from_millis(10));
