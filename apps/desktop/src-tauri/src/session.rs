@@ -112,8 +112,7 @@ pub struct MemberView {
     pub name: String,
     pub muted: bool,
     pub deafened: bool,
-    /// Ours: the gate is open. Others': not known yet (needs per-sender
-    /// activity from Voice, PR #5), always false.
+    /// Ours: the gate is open. Others': their voice is arriving.
     pub speaking: bool,
     /// Percent; ours is always 100.
     pub volume: u8,
@@ -177,16 +176,49 @@ struct Local {
     audio_error: Option<String>,
 }
 
+/// Live measurements for a [`snapshot`].
+struct Live<'a> {
+    rtt: Option<Duration>,
+    jitter_target: Option<usize>,
+    /// Our gate is open.
+    transmitting: bool,
+    /// Whether a sender's voice is arriving, by session id.
+    speaking: &'a dyn Fn(u32) -> bool,
+}
+
+#[cfg(test)]
+impl Live<'_> {
+    const NONE: Live<'static> = Live {
+        rtt: None,
+        jitter_target: None,
+        transmitting: false,
+        speaking: &|_| false,
+    };
+}
+
+/// Linear gains for the other members whose volume is not the default.
+fn gains(state: &ServerState, settings: &Settings) -> Vec<(u32, f32)> {
+    state
+        .members
+        .values()
+        .filter(|m| Some(m.session_id) != state.session_id)
+        .map(|m| (m.session_id, settings.volume(&m.public_key)))
+        .filter(|&(_, percent)| percent != DEFAULT_VOLUME)
+        .map(|(id, percent)| (id, f32::from(percent) / 100.0))
+        .collect()
+}
+
 /// Pure projection of the session into what the UI shows.
 fn snapshot(
     phase: &Phase,
     server: Option<(&ServerState, &Invite)>,
     local: &Local,
     settings: &Settings,
-    rtt: Option<Duration>,
-    jitter_target: Option<usize>,
-    transmitting: bool,
+    live: &Live,
 ) -> Snapshot {
+    let Live {
+        rtt, jitter_target, ..
+    } = *live;
     let talk = TalkView {
         mode: settings.talk_mode,
         key: settings.ptt_key.clone(),
@@ -215,7 +247,10 @@ fn snapshot(
                                 name: m.display_name.clone(),
                                 muted: m.self_mute,
                                 deafened: m.self_deaf,
-                                speaking: mine && transmitting && !silenced,
+                                speaking: match mine {
+                                    true => live.transmitting && !silenced,
+                                    false => (live.speaking)(m.session_id),
+                                },
                                 volume: match mine {
                                     true => DEFAULT_VOLUME,
                                     false => settings.volume(&m.public_key),
@@ -347,15 +382,22 @@ impl Session {
         let state = call.map(|c| c.client.state());
         let server = state.as_ref().zip(call.map(|c| &c.invite));
         let audio = inner.audio.as_ref();
-        snapshot(
-            &inner.phase,
-            server,
-            &inner.local,
-            &settings,
-            call.and_then(|c| c.client.rtt()),
-            audio.and_then(Audio::jitter_target),
-            audio.is_some_and(Audio::transmitting),
-        )
+        let live = Live {
+            rtt: call.and_then(|c| c.client.rtt()),
+            jitter_target: audio.and_then(Audio::jitter_target),
+            transmitting: audio.is_some_and(Audio::transmitting),
+            speaking: &|id| audio.is_some_and(|a| a.speaking(id)),
+        };
+        snapshot(&inner.phase, server, &inner.local, &settings, &live)
+    }
+
+    /// Hands the per-user volumes to the call's audio, by session id.
+    fn apply_gains(&self) {
+        let settings = self.settings();
+        let inner = self.lock();
+        if let (Some(call), Some(audio)) = (&inner.call, &inner.audio) {
+            audio.set_gains(&gains(&call.client.state(), &settings));
+        }
     }
 
     fn emit(&self) {
@@ -520,6 +562,7 @@ impl Session {
         };
         drop(inner);
         drop(replaced);
+        self.apply_gains();
     }
 
     fn restart_audio(&self) {
@@ -593,14 +636,10 @@ impl Session {
     pub fn set_volume(&self, session_id: u32, percent: u8) -> Result<(), String> {
         let state = self.client()?.state();
         let member = state.members.get(&session_id).ok_or("No such user.")?;
-        let settings = self
-            .app
+        self.app
             .state::<Store>()
             .update(|s| s.set_volume(&member.public_key, percent));
-        let gain = f32::from(settings.volume(&member.public_key)) / 100.0;
-        if let Some(audio) = &self.lock().audio {
-            audio.set_gain(session_id, gain);
-        }
+        self.apply_gains();
         self.emit();
         Ok(())
     }
@@ -633,8 +672,17 @@ impl Session {
     }
 
     fn on_event(&self, event: &Event) {
-        let mut inner = self.lock();
-        inner.phase = inner.phase.on(event);
+        {
+            let mut inner = self.lock();
+            inner.phase = inner.phase.on(event);
+        }
+        // Session ids change on (re)connects and joins.
+        if matches!(
+            event,
+            Event::Connected | Event::MemberJoined(_) | Event::MemberLeft(_)
+        ) {
+            self.apply_gains();
+        }
     }
 
     /// The client stopped for good; ends the call. `attempt` is the call's.
@@ -766,9 +814,11 @@ mod tests {
             Some((&state, &invite)),
             &local,
             &settings,
-            Some(Duration::from_millis(22)),
-            None,
-            true,
+            &Live {
+                rtt: Some(Duration::from_millis(22)),
+                transmitting: true,
+                ..Live::NONE
+            },
         );
         let server = snap.server.as_ref().unwrap();
         assert_eq!(server.address, "perjantai.example:7700");
@@ -782,6 +832,8 @@ mod tests {
         assert_eq!(names, ["Aino", "Saara"]);
         assert_eq!(raid.members[0].volume, 85);
         assert!(!raid.members[0].speaking);
+        // Only members away from the default get a gain.
+        assert_eq!(gains(&state, &settings), [(1, 0.85)]);
         assert!(raid.members[1].speaking, "our open gate shows as speaking");
         assert!(snap.channels[0].members[0].muted);
         assert_eq!(snap.latency.total_ms, 43.5 - 11.0 + 11.0);
@@ -794,9 +846,7 @@ mod tests {
             Some((&state, &invite)),
             &local,
             &Settings::default(),
-            None,
-            None,
-            false,
+            &Live::NONE,
         );
         assert!(snap.admin);
     }
@@ -815,9 +865,10 @@ mod tests {
             Some((&state, &invite)),
             &local,
             &Settings::default(),
-            None,
-            None,
-            true,
+            &Live {
+                transmitting: true,
+                ..Live::NONE
+            },
         );
         assert!(snap.muted && snap.deafened);
         assert!(!snap.channels[1].members[1].speaking);
@@ -828,7 +879,7 @@ mod tests {
             talk_mode: TalkMode::VoiceActivity,
             ..Settings::default()
         };
-        let snap = snapshot(&Phase::Idle, None, &local, &vad, None, None, false);
+        let snap = snapshot(&Phase::Idle, None, &local, &vad, &Live::NONE);
         assert_eq!(snap.talk.fallback_reason, None);
         assert!(snap.server.is_none() && snap.channels.is_empty() && !snap.admin);
     }

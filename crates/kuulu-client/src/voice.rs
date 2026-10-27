@@ -18,7 +18,8 @@ use kuulu_audio::{
 };
 use kuulu_proto::{HEADER_LEN, MAX_VOICE_PACKET, VoiceHeader, flags, redundancy};
 use std::io;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant};
 
@@ -38,6 +39,11 @@ const MAX_SEND_AGE: Duration = Duration::from_millis(10);
 const INCOMING: usize = 64;
 /// Session ids of members who left, waiting for the next [`Voice::play`].
 const LEFT: usize = 64;
+/// Senders with a gain other than 1.0 at once; more keep 1.0.
+const MAX_GAINS: usize = 64;
+/// A sender counts as speaking until this many frames after its last
+/// packet (200 ms): clients send only while their gate is open.
+const SPEAKING_HOLD: u32 = 20;
 
 /// Counters since start; jitter figures are the largest over active senders.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -50,6 +56,87 @@ pub struct Stats {
     pub jitter_target: usize,
     /// Frames buffered after the latest [`Voice::play`].
     pub jitter_depth: usize,
+}
+
+/// Per-sender gains and speaking state, shared between [`Voice`] on the
+/// audio thread and other threads through atomics, so the audio thread
+/// never locks.
+pub struct Senders {
+    /// (session id, linear gain as f32 bits); id 0 marks a free entry.
+    gains: [(AtomicU32, AtomicU32); MAX_GAINS],
+    /// Per peer slot: the session id speaking now, 0 if none.
+    speaking: [AtomicU32; MAX_PEERS],
+    /// Serialises [`Senders::set_gains`]; never taken by the audio thread.
+    writer: Mutex<()>,
+}
+
+impl Senders {
+    fn new() -> Self {
+        Self {
+            gains: std::array::from_fn(|_| (AtomicU32::new(0), AtomicU32::new(0))),
+            speaking: std::array::from_fn(|_| AtomicU32::new(0)),
+            writer: Mutex::new(()),
+        }
+    }
+
+    /// Sets the linear gains of these senders by session id; every other
+    /// sender mixes at 1.0. Beyond [`MAX_GAINS`] entries, the rest keep 1.0.
+    pub fn set_gains(&self, gains: &[(u32, f32)]) {
+        let _writer = self.writer.lock().unwrap();
+        let wanted = |id: u32| {
+            gains
+                .iter()
+                .find(|&&(i, g)| i == id && i != 0 && g != 1.0)
+                .map(|&(_, g)| g)
+        };
+        let holds = |session_id: u32| {
+            self.gains
+                .iter()
+                .find(|(id, _)| id.load(Ordering::Acquire) == session_id)
+        };
+        // Update or free existing entries, then claim free ones.
+        for (id, gain) in &self.gains {
+            let current = id.load(Ordering::Acquire);
+            if current == 0 {
+                continue;
+            }
+            match wanted(current) {
+                Some(g) => gain.store(g.to_bits(), Ordering::Relaxed),
+                None => id.store(0, Ordering::Release),
+            }
+        }
+        for &(session_id, _) in gains {
+            let Some(g) = wanted(session_id) else {
+                continue;
+            };
+            if holds(session_id).is_some() {
+                continue;
+            }
+            if let Some((id, gain)) = holds(0) {
+                // The gain is in place before the entry becomes visible.
+                gain.store(g.to_bits(), Ordering::Relaxed);
+                id.store(session_id, Ordering::Release);
+            }
+        }
+    }
+
+    fn gain(&self, session_id: u32) -> f32 {
+        self.gains
+            .iter()
+            .find(|(id, _)| id.load(Ordering::Acquire) == session_id)
+            .map_or(1.0, |(_, gain)| {
+                f32::from_bits(gain.load(Ordering::Relaxed))
+            })
+    }
+
+    /// Whether this sender's voice is arriving now.
+    pub fn speaking(&self, session_id: u32) -> bool {
+        session_id != 0
+            && self
+                .speaking
+                .iter()
+                .any(|id| id.load(Ordering::Relaxed) == session_id)
+    }
 }
 
 /// A voice packet in a ring: fixed size, so moving it never allocates.
@@ -84,6 +171,7 @@ pub struct Voice {
     peers: Box<[Peer]>,
     mixer: Mixer,
     stats: Stats,
+    senders: Arc<Senders>,
     /// Network tasks, stopped on drop.
     tasks: Vec<tokio::task::AbortHandle>,
 }
@@ -164,6 +252,7 @@ impl Voice {
             peers,
             mixer: Mixer::new(),
             stats: Stats::default(),
+            senders: Arc::new(Senders::new()),
             tasks: Vec::new(),
         }
     }
@@ -224,8 +313,23 @@ impl Voice {
             };
             peer.jitter.pop(&mut decode, &mut peer.frame);
         }
+        for (peer, speaking) in self.peers.iter().zip(&self.senders.speaking) {
+            let id = if peer.idle < SPEAKING_HOLD {
+                peer.id
+            } else {
+                0
+            };
+            speaking.store(id, Ordering::Relaxed);
+        }
+        let senders = &self.senders;
         let active = self.peers.iter().filter(|p| p.idle < FORGET_AFTER);
-        self.mixer.mix(active.map(|p| (&p.frame, 1.0)), out);
+        self.mixer
+            .mix(active.map(|p| (&p.frame, senders.gain(p.id))), out);
+    }
+
+    /// Gains and speaking state, for other threads.
+    pub fn senders(&self) -> Arc<Senders> {
+        self.senders.clone()
     }
 
     pub fn stats(&self) -> Stats {
@@ -409,6 +513,43 @@ mod tests {
         // frame, and 17 from 7 frames after 16 stopped.
         assert_eq!(stats.decoded, 14 * 300 + 150 + 298 + 144);
         assert!(out.iter().any(|&s| s.abs() > 0.1));
+    }
+
+    #[test]
+    fn gains_and_speaking_without_allocation() {
+        let (mut talker, mut sent, ..) = voice();
+        let (mut listener, _, mut network, _) = voice();
+        let senders = listener.senders();
+        senders.set_gains(&[(1, 0.0), (2, 1.0), (3, 0.5)]);
+        assert_eq!(
+            (senders.gain(1), senders.gain(2), senders.gain(3)),
+            (0.0, 1.0, 0.5)
+        );
+        let mut out = [0.0; FRAME_SAMPLES];
+        assert_no_alloc(|| {
+            for i in 0..50 {
+                talker.capture(&tone(i));
+                let packet = sent.pop().unwrap();
+                network.push(from(1, &packet)).ok().unwrap();
+                listener.play(&mut out);
+            }
+        });
+        assert!(out.iter().all(|&s| s == 0.0), "sender 1 is at gain 0");
+        assert!(senders.speaking(1) && !senders.speaking(2));
+        // Sender 1 goes quiet; after the hold it no longer speaks.
+        for _ in 0..SPEAKING_HOLD {
+            listener.play(&mut out);
+        }
+        assert!(!senders.speaking(1));
+        // Replacing the gains frees the entries no longer wanted.
+        senders.set_gains(&[(3, 2.0)]);
+        assert_eq!((senders.gain(1), senders.gain(3)), (1.0, 2.0));
+        let used = senders.gains.iter();
+        assert_eq!(
+            used.filter(|(id, _)| id.load(Ordering::Relaxed) != 0)
+                .count(),
+            1
+        );
     }
 
     #[test]

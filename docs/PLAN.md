@@ -300,9 +300,9 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 ### M4 – Puheominaisuudet
 
 - [x] Useat kanavat ja kanavan vaihto
-- [ ] Push-to-talk globaalilla näppäimellä ja VAD
+- [x] Push-to-talk globaalilla näppäimellä ja VAD
 - [x] Mykistys ja kuulokkeiden mykistys
-- [ ] Käyttäjäkohtainen äänenvoimakkuus
+- [x] Käyttäjäkohtainen äänenvoimakkuus
 - [x] Ylläpitäjän toiminnot: kanavien hallinta, siirto, potku ja banni
 
 **Valmis kun:** neljä käyttäjää puhuu samassa kanavassa, ja kaikki kontrollit toimivat kolmella alustalla.

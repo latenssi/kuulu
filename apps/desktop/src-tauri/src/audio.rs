@@ -3,8 +3,9 @@
 //! leaves Rust; the rest of the app sees only [`Audio`] and [`Gate`].
 
 use kuulu_audio::device::{self, DeviceInfo, Input, Output};
-use kuulu_audio::{FRAME_SAMPLES, Frame, Framer, Vad};
+use kuulu_audio::{FRAME_SAMPLES, Framer, Vad};
 use kuulu_client::Client;
+use kuulu_client::voice::{Senders, Voice};
 use serde::Serialize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering::Relaxed};
@@ -75,7 +76,8 @@ pub struct Audio {
     stop: Arc<AtomicBool>,
     meters: Arc<Meters>,
     thread: Option<JoinHandle<()>>,
-    in_call: bool,
+    /// Only in a call.
+    senders: Option<Arc<Senders>>,
     // Dropped after the thread: streams wake it.
     _streams: (device::Stream, Option<device::Stream>),
 }
@@ -91,8 +93,12 @@ impl Audio {
         gate: Arc<Gate>,
         client: Option<Arc<Client>>,
     ) -> Result<Self, String> {
-        let voice = client.map(Voice::start).transpose()?;
-        let in_call = voice.is_some();
+        let voice = client
+            .map(Voice::start)
+            .transpose()
+            .map_err(|e| format!("Cannot start voice: {e}"))?;
+        let senders = voice.as_ref().map(Voice::senders);
+        let in_call = senders.is_some();
         let stop = Arc::new(AtomicBool::new(false));
         let meters = Arc::new(Meters::default());
         let (rings_tx, rings_rx) = mpsc::channel();
@@ -125,7 +131,7 @@ impl Audio {
             stop,
             meters,
             thread: Some(thread),
-            in_call,
+            senders,
             _streams: (capture, playback),
         })
     }
@@ -137,17 +143,28 @@ impl Audio {
 
     /// Whether the gate is passing the microphone to the call.
     pub fn transmitting(&self) -> bool {
-        self.in_call && self.meters.open.load(Relaxed)
+        self.senders.is_some() && self.meters.open.load(Relaxed)
     }
 
-    /// Jitter buffer target in frames; `None` until voice is wired (#5).
+    /// Jitter buffer target in frames, in a call.
     pub fn jitter_target(&self) -> Option<usize> {
-        Voice::WIRED.then(|| self.meters.jitter_target.load(Relaxed))
+        let target = self.meters.jitter_target.load(Relaxed);
+        self.senders.as_ref().map(|_| target)
     }
 
-    /// Volume for one sender, linear gain.
-    // TODO(#5): needs per-sender gain in Voice::play.
-    pub fn set_gain(&self, _session_id: u32, _gain: f32) {}
+    /// Linear gains by session id; senders not listed play at 1.0.
+    pub fn set_gains(&self, gains: &[(u32, f32)]) {
+        if let Some(senders) = &self.senders {
+            senders.set_gains(gains);
+        }
+    }
+
+    /// Whether this sender's voice is arriving now.
+    pub fn speaking(&self, session_id: u32) -> bool {
+        self.senders
+            .as_ref()
+            .is_some_and(|s| s.speaking(session_id))
+    }
 }
 
 impl Drop for Audio {
@@ -202,31 +219,5 @@ fn audio_thread(
         }
         // Woken by every capture and playback callback, and by Drop.
         thread::park();
-    }
-}
-
-/// Stand-in for `kuulu_client::voice::Voice` from PR #5, with the calls
-/// this module makes. TODO(#5): delete and use the real one.
-struct Voice;
-
-struct VoiceStats {
-    jitter_target: usize,
-}
-
-impl Voice {
-    const WIRED: bool = false;
-
-    fn start(_client: Arc<Client>) -> Result<Self, String> {
-        Ok(Self)
-    }
-
-    fn capture(&mut self, _frame: &Frame) {}
-
-    fn play(&mut self, out: &mut Frame) {
-        out.fill(0.0);
-    }
-
-    fn stats(&self) -> VoiceStats {
-        VoiceStats { jitter_target: 0 }
     }
 }
