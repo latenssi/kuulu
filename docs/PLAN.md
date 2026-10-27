@@ -128,7 +128,7 @@ Havainnot:
 - **Päälle kytkettynäkin FEC paikkaa vähemmän:** kotiprofiililla 1,4 % kehyksistä FEC:llä ja 0,9 % PLC:llä, redundanssilla 1,9 % ja 0,4 %. Redundanssin kopio on bitilleen sama kuin kadonnut kehys (39,5 dB häviöttömään verrattuna, FEC:llä noin 37 dB). Huonojen kehysten osuus on FEC 10 %:lla pienempi (0,07 % vs. 0,27 %), mutta ero on muutaman kehyksen luokkaa ja aaltomuotomittarin herkkä kohta; synteettisellä puheella sitä ei voi pitää ratkaisevana.
 - **Bittinopeus:** FEC ei lisää bittinopeutta, koska LBRR otetaan samasta 32 kbit/s:n budjetista (pääkehyksen laadun kustannuksella). Redundanssi kaksinkertaistaa Opus-datan (66 vs. noin 32 kbit/s), mutta johdolla ero on pienempi, 120 vs. 86 kbit/s (+40 %), koska otsakkeet maksavat 100 pakettia sekunnissa kummallakin noin 54 kbit/s.
 - **Latenssi:** FEC:n VOIP-tila lisää 4 ms look-aheadia: budjetti nousisi 43,5 ms:stä 47,5 ms:iin. Redundanssi ei muuta budjettia.
-- **Huono mobiiliyhteys:** kumpikaan ei riitä: kaksi ±30 ms hyppyä tekee ±60 ms päästä päähän, mikä ylittää jitter bufferin 60 ms katon, ja suuri osa kehyksistä myöhästyy. Redundanssi on silti selvästi parempi (PLC 18 % vs. 22 % FEC 10 %:lla).
+- **Huono mobiiliyhteys:** kumpikaan ei riitä: kaksi ±30 ms hyppyä tekee ±60 ms päästä päähän, mikä ylittää jitter bufferin 60 ms katon, ja suuri osa kehyksistä myöhästyy. Redundanssi on silti selvästi parempi (PLC 18 % vs. 22 % FEC 10 %:lla). **Hallitus 27.10.2026: noin 18 % piilotettuja (myöhästyneitä, ei hävinneitä) kehyksiä hyväksytään toistaiseksi; palataan asiaan M6:n mittauksissa.**
 
 **Ehdotus:** pidetään redundanssi oletuksena. Se paikkaa enemmän, paikkaa bitilleen oikein eikä muuta latenssibudjettia. Sen hinta on noin 34 kbit/s enemmän liikennettä johdolla, mikä on pelaajan yhteydelle vähän. FEC olisi järkevä vain, jos kaistasta tulee pullonkaula; silloin se vaatisi 4 ms lisää budjettiin ja kooderin odotetuksi häviöksi vähintään 6 %. Rajoitukset: synteettinen puhe, aaltomuotomittari, yksi siemen.
 
@@ -149,7 +149,7 @@ Jokaisella clientillä on yksi QUIC-yhteys palvelimeen (oletuksena UDP 7700). Oh
 | timestamp | u32 | Näytelaskuri 48 kHz:llä |
 | payload | loput | Opus-kehys (+ edellinen kehys, jos redundanssi) |
 
-**Redundanssipayload** (flags-kentän redundanssibitti päällä): `edellisen pituus u8 | edellinen Opus-kehys | nykyinen Opus-kehys`. Pituus 0 tarkoittaa, ettei edellistä kehystä ole (virran alku tai kehys ei mahdu). Otsake ei muutu; muoto on määritelty tiedostossa `kuulu-proto/src/redundancy.rs`.
+**Redundanssipayload** (flags-kentän redundanssibitti päällä; **hyväksytty, hallitus 27.10.2026**): `edellisen pituus u8 | edellinen Opus-kehys | nykyinen Opus-kehys`. Pituus 0 tarkoittaa, ettei edellistä kehystä ole (virran alku tai kehys ei mahdu). Otsake ei muutu; muoto on määritelty tiedostossa `kuulu-proto/src/redundancy.rs`.
 
 Palvelin ei pura ääntä. Se tarkistaa lähettäjän, kirjoittaa sender-kentän ja välittää paketin muille saman kanavan jäsenille.
 
@@ -318,6 +318,7 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 ### M6 – Mittaus, kovennus ja 0.1-beta
 
 - [ ] Laitteistomittaus ja vertailu Mumbleen, TeamSpeakiin ja Discordiin
+- [ ] Huono mobiiliyhteys: noin 18 % myöhästyneitä kehyksiä hyväksyttiin M3:ssa toistaiseksi (jitter bufferin 60 ms katto); arvioidaan uudelleen
 - [ ] Fuzzaus ja kuormitustesti 100 clientillä
 - [ ] Docker-image, docker-compose ja palvelimen asennusohje
 - [ ] Julkinen 0.1.0-beta
