@@ -3,18 +3,40 @@ syntax = "proto3";
 
 package kuulu.control;
 
-// Everything the client sends on the control stream.
+// Everything the client sends on the control stream. The client sends Hello
+// first; the server answers every later message with a Response carrying the
+// same request_id.
 message ClientMessage {
   oneof msg {
     Hello hello = 1;
+    JoinChannel join_channel = 2;
+    SetVoiceState set_voice_state = 3;
+    // Admin requests; members get Response FORBIDDEN.
+    CreateChannel create_channel = 4;
+    DeleteChannel delete_channel = 5;
+    RenameChannel rename_channel = 6;
+    MoveMember move_member = 7;
+    Kick kick = 8;
+    Ban ban = 9;
   }
+  uint32 request_id = 15;
 }
 
-// Everything the server sends on the control stream.
+// Everything the server sends on the control stream: Welcome or Reject first,
+// then responses and events in the order the server applied them.
 message ServerMessage {
   oneof msg {
     Welcome welcome = 1;
     Reject reject = 2;
+    Response response = 3;
+    Member member_joined = 4;
+    MemberLeft member_left = 5;
+    // Full new state of a member that changed channel, mute or deafen.
+    Member member_updated = 6;
+    // Channel events carry no members.
+    Channel channel_created = 7;
+    ChannelDeleted channel_deleted = 8;
+    Channel channel_renamed = 9;
   }
 }
 
@@ -27,10 +49,16 @@ message Hello {
   string app_version = 3;
   // Capabilities for additions within a major version.
   repeated string features = 4;
-  // Ed25519 identity key; empty until identities exist (M5).
+  // Ed25519 identity public key (32 bytes). The server identifies users by it.
   bytes public_key = 5;
-  // Invite token; not checked until invites exist (M4/M5).
+  // Invite token; not checked until invites exist (M5).
   string invite = 6;
+  // Freely chosen name shown to others; may be empty.
+  string display_name = 7;
+  // Ed25519 signature by public_key over 32 bytes of TLS exporter keying
+  // material (label "EXPORTER-kuulu-identity", context public_key). Binds
+  // the key to this TLS session, so a captured Hello cannot be replayed.
+  bytes identity_proof = 8;
 }
 
 message Welcome {
@@ -38,7 +66,14 @@ message Welcome {
   uint32 session_id = 1;
   // Server application version.
   string server_version = 2;
+  // All channels with their members, ours included.
   repeated Channel channels = 3;
+  // Server name from kuulu.toml.
+  string server_name = 4;
+  // Negotiated protocol major version.
+  uint32 protocol_version = 5;
+  // Capabilities for additions within a major version.
+  repeated string features = 6;
 }
 
 message Channel {
@@ -49,6 +84,77 @@ message Channel {
 
 message Member {
   uint32 session_id = 1;
+  string display_name = 2;
+  uint32 channel_id = 3;
+  // Voice from this member is dropped by the server. Deafen implies mute.
+  bool self_mute = 4;
+  // This member receives no voice.
+  bool self_deaf = 5;
+}
+
+message MemberLeft {
+  uint32 session_id = 1;
+}
+
+message ChannelDeleted {
+  // Members still in it were moved first, each with member_updated.
+  uint32 id = 1;
+}
+
+// Moves the sender into a channel.
+message JoinChannel {
+  uint32 channel_id = 1;
+}
+
+// The sender's own mute and deafen; both are always sent.
+message SetVoiceState {
+  bool self_mute = 1;
+  bool self_deaf = 2;
+}
+
+message CreateChannel {
+  string name = 1;
+}
+
+// Members in the channel move to the first channel. The last channel cannot
+// be deleted.
+message DeleteChannel {
+  uint32 channel_id = 1;
+}
+
+message RenameChannel {
+  uint32 channel_id = 1;
+  string name = 2;
+}
+
+message MoveMember {
+  uint32 session_id = 1;
+  uint32 channel_id = 2;
+}
+
+// Closes the member's connection with application error code 1 (kicked).
+message Kick {
+  uint32 session_id = 1;
+}
+
+// Bans the member's public key and closes all its connections with
+// application error code 2 (banned).
+message Ban {
+  uint32 session_id = 1;
+}
+
+message Response {
+  enum Status {
+    OK = 0;
+    // Admin-only request from a member.
+    FORBIDDEN = 1;
+    // No such channel or member.
+    NOT_FOUND = 2;
+    // Malformed, unsupported, or not allowed in the current state.
+    INVALID = 3;
+  }
+  uint32 request_id = 1;
+  Status status = 2;
 }
 
 message Reject {
@@ -60,6 +166,8 @@ message Reject {
     TOO_NEW = 2;
     INVITE_EXPIRED = 3;
     BANNED = 4;
+    // Missing or malformed public key, or identity_proof does not verify.
+    INVALID_IDENTITY = 5;
   }
   Reason reason = 1;
 }
