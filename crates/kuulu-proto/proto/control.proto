@@ -168,6 +168,8 @@ message Reject {
     BANNED = 4;
     // Missing or malformed public key, or identity_proof does not verify.
     INVALID_IDENTITY = 5;
+    // The server has its configured maximum of users.
+    SERVER_FULL = 6;
   }
   Reason reason = 1;
 }

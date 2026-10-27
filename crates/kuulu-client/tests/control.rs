@@ -4,7 +4,7 @@
 use kuulu_client::{Client, Error, Event, IdentityKey, Request, RequestError, ServerState};
 use kuulu_proto::control::reject::Reason;
 use kuulu_proto::identity::to_hex;
-use kuulu_server::{ChannelConfig, Config, Server};
+use kuulu_server::Server;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,25 +13,34 @@ use tokio::time::timeout;
 
 const WAIT: Duration = Duration::from_secs(10);
 
-/// A fresh data directory with this config, port 0 unless given.
+/// A fresh data directory with a config on port 0.
 fn data_dir(test: &str, admins: &[&IdentityKey], channels: &[&str]) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("kuulu-{test}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let config = Config {
-        port: 0,
-        admins: admins.iter().map(|k| to_hex(&k.public_key())).collect(),
-        channels: (1..)
-            .zip(channels)
-            .map(|(id, name)| ChannelConfig {
-                id,
-                name: name.to_string(),
-            })
-            .collect(),
-        ..Config::default()
-    };
-    config.save(&dir.join("kuulu.toml")).unwrap();
+    write_config(&dir, 0, 100, admins, channels);
     dir
+}
+
+fn write_config(
+    dir: &Path,
+    port: u16,
+    max_users: usize,
+    admins: &[&IdentityKey],
+    channels: &[&str],
+) {
+    let admins: Vec<_> = admins
+        .iter()
+        .map(|k| format!("\"{}\"", to_hex(&k.public_key())))
+        .collect();
+    let mut text = format!(
+        "port = {port}\nmax_users = {max_users}\nadmins = [{}]\n",
+        admins.join(", ")
+    );
+    for (id, name) in (1..).zip(channels) {
+        text += &format!("[[channels]]\nid = {id}\nname = \"{name}\"\n");
+    }
+    std::fs::write(dir.join("kuulu.toml"), text).unwrap();
 }
 
 /// Best effort: on Windows the still-running server keeps `kuulu.db` open.
@@ -235,18 +244,84 @@ async fn bans_and_channels_survive_restart() {
     );
     let rejoin = Client::connect_as(addr, &fp, &banned_key, "troll").await;
     assert_eq!(rejoin.err(), Some(Error::Rejected(Reason::Banned)));
+    let config = std::fs::read(dir.join("kuulu.toml")).unwrap();
+    admin
+        .request(Request::CreateChannel("Kept".into()))
+        .await
+        .unwrap();
+    admin.request(Request::DeleteChannel(2)).await.unwrap();
     admin
         .request(Request::CreateChannel("Kept".into()))
         .await
         .unwrap();
     drop(admin);
+    // The server never writes its config.
+    assert_eq!(std::fs::read(dir.join("kuulu.toml")).unwrap(), config);
 
     server.close().await;
+    // Config channels only seed the first start.
+    write_config(&dir, 0, 100, &[&admin_key], &["Ignored", "Also ignored"]);
     let (_server, addr, fp) = start(&dir);
     let rejoin = Client::connect_as(addr, &fp, &banned_key, "troll").await;
     assert_eq!(rejoin.err(), Some(Error::Rejected(Reason::Banned)));
     let client = Client::connect(addr, &fp).await.unwrap();
-    assert_eq!(client.state().channels[&2], "Kept");
+    let channels: Vec<_> = client.state().channels.into_iter().collect();
+    // Deleted id 2 was not reused.
+    assert_eq!(
+        channels,
+        [(1, "General".to_string()), (3, "Kept".to_string())]
+    );
+    cleanup(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_config_is_an_error() {
+    let dir = data_dir("empty", &[], &["General"]);
+    std::fs::write(dir.join("kuulu.toml"), "\n").unwrap();
+    assert!(Server::open(&dir).is_err());
+    cleanup(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn full_server_rejects() {
+    let dir = data_dir("full", &[], &["General"]);
+    write_config(&dir, 0, 2, &[], &["General"]);
+    let (_server, addr, fp) = start(&dir);
+    let _a = Client::connect(addr, &fp).await.unwrap();
+    let b = Client::connect(addr, &fp).await.unwrap();
+    let err = Client::connect(addr, &fp).await.err();
+    assert_eq!(err, Some(Error::Rejected(Reason::ServerFull)));
+    drop(b);
+    // Room again once someone leaves.
+    timeout(WAIT, async {
+        while Client::connect(addr, &fp).await.is_err() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    cleanup(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn request_flood_disconnects_only_the_flooder() {
+    let dir = data_dir("flood", &[], &["General"]);
+    let (_server, addr, fp) = start(&dir);
+    let calm = Client::connect(addr, &fp).await.unwrap();
+    let flooder = Arc::new(Client::connect(addr, &fp).await.unwrap());
+    let flooder_id = flooder.session_id().unwrap();
+    let mut events = flooder.events();
+    for _ in 0..(kuulu_server::CONTROL_BURST * 5) {
+        let flooder = flooder.clone();
+        tokio::spawn(async move { flooder.request(Request::JoinChannel(1)).await });
+    }
+    let disconnected = timeout(WAIT, async {
+        while events.recv().await != Ok(Event::Disconnected) {}
+    })
+    .await;
+    assert!(disconnected.is_ok());
+    until(&calm, |s| !s.members.contains_key(&flooder_id)).await;
+    assert_eq!(calm.request(Request::JoinChannel(1)).await, Ok(()));
     cleanup(&dir);
 }
 
@@ -262,10 +337,7 @@ async fn reconnect_restores_channel_and_mute() {
     // Restart on the same port.
     server.close().await;
     drop(server);
-    let path = dir.join("kuulu.toml");
-    let mut config = Config::load_or_create(&path).unwrap();
-    config.port = addr.port();
-    config.save(&path).unwrap();
+    write_config(&dir, addr.port(), 100, &[], &["General", "Games"]);
     let server = timeout(WAIT, async {
         loop {
             if let Ok(server) = Server::open(&dir) {

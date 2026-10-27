@@ -16,8 +16,9 @@ use kuulu_proto::control::{
 use kuulu_proto::{VoiceHeader, frame, identity};
 use quinn::rustls;
 use rate_limit::RateLimit;
-use state::{Member, Persist, State};
-use std::net::{Ipv4Addr, SocketAddr};
+use state::{MAX_USERS, Member, State, clean_name};
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -27,6 +28,19 @@ use tokio::sync::mpsc;
 
 /// Datagrams per second a connection may send before the excess is dropped.
 pub const RATE_LIMIT: u32 = 120;
+/// Control requests per second per session, with bursts of
+/// [`CONTROL_BURST`]. A person clicking makes a few per second and a
+/// reconnect restores state with two; a client exceeding this is broken or
+/// hostile and is disconnected, so no member can monopolise the state lock.
+pub const CONTROL_RATE: u32 = 20;
+pub const CONTROL_BURST: u32 = 10;
+/// New connections per second per source IP, with bursts of
+/// [`HANDSHAKE_BURST`]: enough for a LAN party behind one NAT joining at
+/// once; excess connections are refused before any TLS work.
+pub const HANDSHAKE_RATE: u32 = 2;
+pub const HANDSHAKE_BURST: u32 = 10;
+/// Source IPs tracked for [`HANDSHAKE_RATE`]; the table is reset beyond this.
+const TRACKED_IPS: usize = 4096;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Control messages queued towards one client before it counts as stalled.
 const CONTROL_QUEUE: usize = 256;
@@ -40,31 +54,51 @@ pub struct Server {
 }
 
 struct Shared {
+    /// Cleaned like display names, so it fits the Welcome size bound.
     name: String,
     /// Held only briefly and never across I/O: voice forwarding takes it per packet.
     state: Mutex<State>,
-    /// Lock order: `store` before `state`.
-    store: Mutex<Store>,
+    store: Store,
 }
 
 impl Server {
     /// A server with the default configuration that persists nothing, for
     /// tests and benchmarks. Call [`Server::run`] to start accepting.
     pub fn bind(addr: SocketAddr, identity: &Identity) -> io::Result<Self> {
-        Self::start(addr, identity, Store::in_memory(Config::default())?)
+        Self::start(addr, identity, &Config::default(), None)
     }
 
     /// The real server: `kuulu.toml`, `cert.der`, `key.der` and `kuulu.db` in
     /// `dir`, each created on first run. Listens on the configured port.
     pub fn open(dir: &Path) -> io::Result<Self> {
-        let config_path = dir.join("kuulu.toml");
-        let config = Config::load_or_create(&config_path)?;
+        let config = Config::load_or_create(&dir.join("kuulu.toml"))?;
         let identity = Identity::load_or_generate(dir)?;
         let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, config.port));
-        Self::start(addr, &identity, Store::open(dir, config_path, config)?)
+        Self::start(addr, &identity, &config, Some(dir))
     }
 
-    fn start(addr: SocketAddr, identity: &Identity, store: Store) -> io::Result<Self> {
+    fn start(
+        addr: SocketAddr,
+        identity: &Identity,
+        config: &Config,
+        dir: Option<&Path>,
+    ) -> io::Result<Self> {
+        let admins = config.admin_keys()?;
+        let seed: Vec<_> = config
+            .channels
+            .iter()
+            .map(|c| ChannelConfig {
+                id: c.id,
+                name: clean_name(&c.name),
+            })
+            .collect();
+        if config.max_users > MAX_USERS {
+            eprintln!("max_users {} lowered to {MAX_USERS}", config.max_users);
+        }
+        let max_users = config.max_users.min(MAX_USERS);
+        let (store, loaded) = Store::open(dir, &seed)?;
+        let state = State::new(loaded, max_users, admins, store.clone());
+
         let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
         ))
@@ -77,17 +111,15 @@ impl Server {
         tls.alpn_protocols = kuulu_proto::alpn_protocols();
         let crypto =
             quinn::crypto::rustls::QuicServerConfig::try_from(tls).map_err(io::Error::other)?;
-        let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-        config.transport_config(Arc::new(kuulu_proto::server_transport_config()));
-        let endpoint = quinn::Endpoint::server(config, addr)?;
-        let config = store.config();
-        let state = State::new(&config.channels, config.admin_keys()?, store.banned()?);
+        let mut quic = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+        quic.transport_config(Arc::new(kuulu_proto::server_transport_config()));
+        let endpoint = quinn::Endpoint::server(quic, addr)?;
         Ok(Self {
             endpoint,
             shared: Arc::new(Shared {
-                name: config.name.clone(),
+                name: clean_name(&config.name),
                 state: Mutex::new(state),
-                store: Mutex::new(store),
+                store,
             }),
             fingerprint: identity.fingerprint(),
         })
@@ -104,14 +136,29 @@ impl Server {
 
     /// Disconnects everyone at once, so clients reconnect right away instead
     /// of waiting for an idle timeout, and stops [`Server::run`].
+    /// Also waits until every change is in the database.
     pub async fn close(&self) {
         self.endpoint.close(0u32.into(), b"server shutting down");
         self.endpoint.wait_idle().await;
+        let store = self.shared.store.clone();
+        let _ = tokio::task::spawn_blocking(move || store.flush()).await;
     }
 
     /// Accepts connections until the endpoint closes.
     pub async fn run(&self) {
+        let mut per_ip: HashMap<IpAddr, RateLimit> = HashMap::new();
         while let Some(incoming) = self.endpoint.accept().await {
+            let ip = incoming.remote_address().ip();
+            if per_ip.len() >= TRACKED_IPS && !per_ip.contains_key(&ip) {
+                per_ip.clear();
+            }
+            let limit = per_ip
+                .entry(ip)
+                .or_insert_with(|| RateLimit::new(HANDSHAKE_RATE, HANDSHAKE_BURST));
+            if !limit.allow(Instant::now()) {
+                incoming.refuse();
+                continue;
+            }
             let shared = self.shared.clone();
             tokio::spawn(async move {
                 let addr = incoming.remote_address();
@@ -145,7 +192,6 @@ async fn serve(incoming: quinn::Incoming, shared: Arc<Shared>) -> Result<(), Box
     };
     let (control, mut outbox) = mpsc::channel(CONTROL_QUEUE);
     let member = Member::new(conn.clone(), control.clone(), key, &hello.display_name);
-    shared.store.lock().unwrap().seen(&key, member.name());
     let welcome = Welcome {
         server_version: env!("CARGO_PKG_VERSION").into(),
         server_name: shared.name.clone(),
@@ -169,8 +215,13 @@ async fn serve(incoming: quinn::Incoming, shared: Arc<Shared>) -> Result<(), Box
         Ok(())
     };
     let read = async {
+        let mut limit = RateLimit::new(CONTROL_RATE, CONTROL_BURST);
         loop {
             let msg = frame::read::<ClientMessage>(&mut recv).await?;
+            if !limit.allow(Instant::now()) {
+                conn.close(0u32.into(), b"too many requests");
+                return Err("too many requests".into());
+            }
             // Unknown requests from newer clients get INVALID, not silence.
             let status = match msg.msg {
                 Some(msg) => session.handle(msg).err().unwrap_or(Status::Ok),
@@ -180,10 +231,17 @@ async fn serve(incoming: quinn::Incoming, shared: Arc<Shared>) -> Result<(), Box
                 request_id: msg.request_id,
                 status: status.into(),
             });
-            // A full queue means the connection is being closed anyway.
-            let _ = control.try_send(ServerMessage {
-                msg: Some(response),
-            });
+            // A client that does not read its responses is stalled, like one
+            // that does not read events.
+            if control
+                .try_send(ServerMessage {
+                    msg: Some(response),
+                })
+                .is_err()
+            {
+                conn.close(0u32.into(), b"control stream too slow");
+                return Err("control stream too slow".into());
+            }
         }
     };
     let result: Result<(), Box<dyn Error>> = tokio::select! {
@@ -215,25 +273,13 @@ struct Session {
 
 impl Session {
     fn handle(&self, msg: client_message::Msg) -> Result<(), Status> {
-        let persist = self.shared.state.lock().unwrap().handle(self.id, msg)?;
-        match persist {
-            Persist::Nothing => {}
-            Persist::Ban(key) => self.shared.store.lock().unwrap().ban(&key),
-            Persist::Channels => {
-                // Snapshot under the store lock, so concurrent changes are
-                // written in order and the last write holds the newest state.
-                let mut store = self.shared.store.lock().unwrap();
-                let channels = self.shared.state.lock().unwrap().channels();
-                store.save_channels(channels);
-            }
-        }
-        Ok(())
+        self.shared.state.lock().unwrap().handle(self.id, msg)
     }
 
     /// Forwards each valid datagram to the sender's channel without touching
     /// the payload. The sender field is overwritten so clients cannot spoof it.
     async fn forward_datagrams(&self, conn: &quinn::Connection) -> quinn::ConnectionError {
-        let mut limit = RateLimit::new(RATE_LIMIT);
+        let mut limit = RateLimit::new(RATE_LIMIT, RATE_LIMIT / 10);
         loop {
             let packet = match conn.read_datagram().await {
                 Ok(packet) => packet,

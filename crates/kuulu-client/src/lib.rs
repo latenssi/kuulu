@@ -50,7 +50,11 @@ pub enum Error {
 
 impl Error {
     fn is_fatal(&self) -> bool {
-        !matches!(self, Self::Connection(_))
+        // A full server may have room later.
+        !matches!(
+            self,
+            Self::Connection(_) | Self::Rejected(Reason::ServerFull)
+        )
     }
 }
 
@@ -72,6 +76,7 @@ impl fmt::Display for Error {
             Self::Rejected(Reason::InvalidIdentity) => {
                 write!(f, "the server could not verify your identity key")
             }
+            Self::Rejected(Reason::ServerFull) => write!(f, "the server is full"),
             Self::Rejected(Reason::Unspecified) => write!(f, "the server refused the connection"),
             Self::CertificateMismatch => write!(
                 f,
