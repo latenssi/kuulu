@@ -205,8 +205,11 @@ impl JitterBuffer {
     }
 
     /// Buffered frames: from the next to play through the newest received
-    /// one, gaps included.
+    /// one, gaps included. Before playback starts, the packets received.
     pub fn depth(&self) -> usize {
+        if !self.playing {
+            return self.slots.iter().filter(|s| s.filled).count();
+        }
         (self.newest.wrapping_sub(self.next) as i16 + 1).max(0) as usize
     }
 
@@ -513,6 +516,17 @@ mod tests {
         h.tick(1000, LOUD);
         h.tick(1001, LOUD);
         assert_eq!(h.played, [Some(0), Some(1000), Some(1001)]);
+    }
+
+    #[test]
+    fn depth_counts_buffered_frames() {
+        let mut h = Harness::new();
+        h.push(40, LOUD);
+        assert_eq!(h.jb.depth(), 1);
+        h.pop();
+        assert_eq!(h.jb.depth(), 0);
+        h.push(42, LOUD);
+        assert_eq!(h.jb.depth(), 2); // 41 is a gap
     }
 
     #[test]

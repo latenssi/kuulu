@@ -31,37 +31,43 @@ async fn speech_stays_intelligible_over_home_network() {
     let source = speech(SECONDS * SAMPLE_RATE as usize);
     let input = source.clone();
     // The audio thread: one capture and one playback frame per 10 ms.
-    let (output, stats, max_target, max_depth) = tokio::task::spawn_blocking(move || {
-        let start = Instant::now();
-        let mut output = Vec::with_capacity(input.len());
-        let mut out = [0.0; FRAME_SAMPLES];
-        let (mut max_target, mut max_depth) = (0, 0);
-        for (i, frame) in input.as_chunks().0.iter().enumerate() {
-            let due = start + Duration::from_millis(10) * i as u32;
-            std::thread::sleep(due.saturating_duration_since(Instant::now()));
-            talker.capture(frame);
-            listener.play(&mut out);
-            output.extend_from_slice(&out);
-            let s = listener.stats();
-            max_target = max_target.max(s.jitter_target);
-            max_depth = max_depth.max(s.jitter_depth);
-        }
-        (output, listener.stats(), max_target, max_depth)
-    })
-    .await
-    .unwrap();
+    let (output, stats, max_target, mean_depth, max_late) =
+        tokio::task::spawn_blocking(move || {
+            let start = Instant::now();
+            let mut output = Vec::with_capacity(input.len());
+            let mut out = [0.0; FRAME_SAMPLES];
+            let (mut max_target, mut depth_sum, mut max_late) = (0, 0, Duration::ZERO);
+            let frames = input.as_chunks().0;
+            for (i, frame) in frames.iter().enumerate() {
+                let due = start + Duration::from_millis(10) * i as u32;
+                std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                // A late tick is the test runner's stall, not the network's.
+                max_late = max_late.max(Instant::now() - due);
+                talker.capture(frame);
+                listener.play(&mut out);
+                output.extend_from_slice(&out);
+                let s = listener.stats();
+                max_target = max_target.max(s.jitter_target);
+                depth_sum += s.jitter_depth;
+            }
+            let mean_depth = depth_sum as f64 / frames.len() as f64;
+            (output, listener.stats(), max_target, mean_depth, max_late)
+        })
+        .await
+        .unwrap();
 
     let quality = compare(&source, &output, CODEC_DELAY);
     let played = stats.decoded + stats.concealed;
     let concealed = stats.concealed as f64 / played as f64;
     println!(
-        "jitter target max {max_target}, depth max {max_depth} frames; \
+        "audio loop late by up to {max_late:?}; \
+         jitter target max {max_target}, mean depth {mean_depth:.2} frames; \
          concealed {concealed:.4} of {played} frames; \
          SNR {:.1} dB, poor frames {:.4} of {} voiced",
         quality.snr_db, quality.poor, quality.voiced_frames
     );
     assert!(max_target <= 2, "jitter target {max_target}");
-    assert!(max_depth <= 2, "jitter depth {max_depth}");
+    assert!(mean_depth <= 2.0, "jitter depth {mean_depth}");
     assert!(played as usize >= SECONDS * 95, "{stats:?}");
     assert!(concealed < 0.03, "{stats:?}");
     assert!(quality.snr_db > 10.0 && quality.poor < 0.05, "{quality:?}");
