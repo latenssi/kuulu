@@ -389,7 +389,7 @@ Read it before starting any work.
 ## Avoimet kysymykset
 
 - [x] **Lisenssi:** AGPL-3.0-only (päätetty 27.10.2026). Pitää myös hostatut johdannaiset avoimina.
-- [ ] **Nimi:** tavaramerkkihaku, verkkotunnus ja GitHub-organisaatio.
+- [x] **Nimi:** pidetään Kuulu (päätetty 27.10.2026). Alustava tavaramerkkihaku löysi rekisteröidyn EU-merkin KUULU (EUTM 019170228, Markkinointiviestintätoimisto Kuulu Oy, luokat 35/38/41/42/45, mm. telekonferenssit ja äänidatan siirto). Riski tiedostettu: mahdollinen vaatimus nimen vaihdosta, todennäköisempi jos projekti muuttuu kaupalliseksi. Varavaihtoehto Sautio (alustava haku puhdas, sautio.app/.gg vapaana 27.10.2026). Verkkotunnus ja GitHub-organisaatio avoinna.
 - [x] **Pakettihäviöt:** redundanssi (päätetty 27.10.2026); Opuksen sisäinen FEC hylätty v1:stä. Perustelut kohdassa Pakettihäviöt.
 - [ ] **Koodiallekirjoitus:** Windows- ja macOS-sertifikaattien kustannukset ja kuka hallinnoi avaimia.
 - [ ] **Windowsin exclusive-tila:** vaatii oman WASAPI-toteutuksen cpalin rinnalle; v1 vai myöhemmin.
