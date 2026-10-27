@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "0 3 * * 1"
 
 permissions:
   contents: read
@@ -66,3 +68,32 @@ jobs:
           tool: cargo-deny,cargo-audit
       - run: cargo deny check
       - run: cargo audit
+
+  # Each fuzz target for a minute. Too slow for every PR: main and weekly.
+  fuzz:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Same nightly as the `fuzz` shell in flake.nix.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: nightly-2026-10-20
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: protoc,cargo-fuzz
+      - run: cargo fuzz build -a
+      # New inputs go to a scratch corpus; the committed seeds stay as they are.
+      - run: |
+          for target in $(cargo fuzz list); do
+            mkdir -p "/tmp/corpus/$target"
+            cargo fuzz run -a "$target" "/tmp/corpus/$target" "fuzz/corpus/$target" -- -max_total_time=60
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts

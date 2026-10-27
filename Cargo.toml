@@ -1,8 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/desktop/src-tauri"]
-# Vendored, patched dependencies; see their PATCHES.md.
-exclude = ["third_party"]
+# Vendored, patched dependencies (see their PATCHES.md), and the cargo-fuzz
+# targets, which need nightly (see fuzz/Cargo.toml).
+exclude = ["third_party", "fuzz"]
 
 [workspace.package]
 version = "0.0.0"

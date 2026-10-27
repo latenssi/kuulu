@@ -77,18 +77,21 @@ impl Config {
                 "{} is empty; delete it to create a default one",
                 path.display()
             ))),
-            Ok(text) => {
-                let config: Self = toml::from_str(&text).map_err(invalid)?;
-                config.admin_keys()?;
-                config.check_channels()?;
-                Ok(config)
-            }
+            Ok(text) => Self::parse(&text),
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 fs::write(path, DEFAULT_FILE)?;
                 Ok(Self::default())
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Parses and validates the contents of `kuulu.toml`.
+    pub fn parse(text: &str) -> io::Result<Self> {
+        let config: Self = toml::from_str(text).map_err(invalid)?;
+        config.admin_keys()?;
+        config.check_channels()?;
+        Ok(config)
     }
 
     pub(crate) fn admin_keys(&self) -> io::Result<HashSet<PublicKey>> {

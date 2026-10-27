@@ -1,0 +1,50 @@
+# cargo-fuzz targets for everything parsed from the network or disk.
+# Needs nightly: `nix develop .#fuzz -c cargo fuzz run voice_header`
+# (from the repository root). Seed corpora live in fuzz/corpus/<target>.
+
+[package]
+name = "kuulu-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+kuulu-proto = { path = "../crates/kuulu-proto" }
+kuulu-server = { path = "../crates/kuulu-server" }
+libfuzzer-sys = "0.4"
+prost = "0.14"
+
+# Its own workspace, so the main one never needs nightly.
+[workspace]
+
+[[bin]]
+name = "voice_header"
+path = "fuzz_targets/voice_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "redundancy"
+path = "fuzz_targets/redundancy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "control_frame"
+path = "fuzz_targets/control_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false

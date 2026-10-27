@@ -1,0 +1,16 @@
+# Kuulu server configuration. The server never writes to this file.
+
+name = "Kuulu"
+port = 7700
+# Host name or IP address in invite links, e.g. "voice.example.com".
+public_host = ""
+# Most simultaneous users.
+max_users = 100
+# Hex Ed25519 public keys of administrators, e.g. ["3b6a27bc..."].
+admins = []
+
+# Channels created on the first start only. After that, channels live in
+# kuulu.db and admins manage them from the client: editing these has no effect.
+[[channels]]
+id = 1
+name = "General"
