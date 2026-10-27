@@ -93,13 +93,15 @@ pub async fn spawn(
     Ok(local)
 }
 
-struct Link {
+/// One direction's impairment: the per-packet draws [`spawn`] applies, also
+/// usable on a simulated clock.
+pub struct Link {
     profile: Profile,
     rng: StdRng,
 }
 
 impl Link {
-    fn new(profile: Profile, seed: u64) -> Self {
+    pub fn new(profile: Profile, seed: u64) -> Self {
         Self {
             profile,
             rng: StdRng::seed_from_u64(seed),
@@ -107,7 +109,7 @@ impl Link {
     }
 
     /// How long to hold the next packet, or `None` to drop it.
-    fn delay(&mut self) -> Option<Duration> {
+    pub fn delay(&mut self) -> Option<Duration> {
         let p = self.profile;
         // Draw both values for every packet so drops do not shift later draws.
         let lost = self.rng.random_bool(p.loss);

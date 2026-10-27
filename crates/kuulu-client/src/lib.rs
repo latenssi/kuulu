@@ -7,11 +7,13 @@
 //! [`Client::events`]) and sends requests ([`Client::request`]). The
 //! connection is re-established behind that interface when it drops, and the
 //! channel and mute/deafen are restored.
+//! [`voice::Voice`] connects it to the audio pipeline.
 
 pub mod netem;
 mod session;
 mod state;
 mod tls;
+pub mod voice;
 
 pub use kuulu_proto::identity::{IdentityKey, PublicKey};
 pub use state::{Event, Member, ServerState};

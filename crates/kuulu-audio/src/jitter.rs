@@ -8,7 +8,9 @@
 //! (target 1 = play a frame on the first tick after it arrives). A late
 //! packet (one whose frame was already concealed) raises the target by one
 //! frame immediately and holds playback back one frame. Other old packets
-//! (duplicates, redundant copies, leftovers) are ignored. Every 2 s without
+//! (duplicates, leftovers) are ignored. Copies of a frame carried by a later
+//! packet (loss redundancy) go through [`JitterBuffer::push_redundant`]: they
+//! fill gaps but never count as late, since their frame was lost, not late. Every 2 s without
 //! a late packet the target drops by one; if the buffer stayed deeper than
 //! the target for that whole window, one silent frame is dropped. The same
 //! mechanism absorbs clock drift between sender and receiver devices.
@@ -26,7 +28,7 @@ const SILENCE_PEAK: f32 = 0.003;
 /// Consecutive missing frames after which the sender is treated as stopped
 /// and the next packet restarts the stream. Equals the largest jitter the
 /// buffer absorbs, so anything missing longer is lost rather than late.
-const STOP_AFTER_MISSING: u32 = MAX_TARGET as u32;
+pub const STOP_AFTER_MISSING: u32 = MAX_TARGET as u32;
 
 struct Slot {
     filled: bool,
@@ -102,6 +104,26 @@ impl JitterBuffer {
                 self.skip_to(seq);
             }
         }
+        self.store(seq, payload);
+    }
+
+    /// Stores frame `seq` as carried redundantly by a later packet, which
+    /// must be [`push`](Self::push)ed first. Fills a gap if the frame has not
+    /// been played yet; otherwise ignored.
+    pub fn push_redundant(&mut self, seq: u16, payload: &[u8]) {
+        let ahead = seq.wrapping_sub(self.next) as i16;
+        let slot = &self.slots[seq as usize % CAPACITY];
+        let newer_in_slot = slot.filled && slot.seq.wrapping_sub(seq) as i16 >= 0;
+        if !self.received
+            || newer_in_slot
+            || (self.playing && !(0..CAPACITY as i16).contains(&ahead))
+        {
+            return;
+        }
+        self.store(seq, payload);
+    }
+
+    fn store(&mut self, seq: u16, payload: &[u8]) {
         if !self.received || seq.wrapping_sub(self.newest) as i16 > 0 {
             self.newest = seq;
         }
@@ -182,8 +204,12 @@ impl JitterBuffer {
         slot.filled && slot.seq == seq
     }
 
-    /// Frames from `next` through the newest received one, gaps included.
-    fn depth(&self) -> usize {
+    /// Buffered frames: from the next to play through the newest received
+    /// one, gaps included. Before playback starts, the packets received.
+    pub fn depth(&self) -> usize {
+        if !self.playing {
+            return self.slots.iter().filter(|s| s.filled).count();
+        }
         (self.newest.wrapping_sub(self.next) as i16 + 1).max(0) as usize
     }
 
@@ -264,6 +290,11 @@ mod tests {
                 f.fill(p.map_or(0.0, |p| p[2] as f32));
             };
             self.jb.pop(&mut decode, &mut [0.0; FRAME_SAMPLES]);
+        }
+
+        fn push_redundant(&mut self, seq: u16) {
+            let [a, b] = seq.to_le_bytes();
+            self.jb.push_redundant(seq, &[a, b, LOUD]);
         }
 
         /// Steady stream: one packet then one pop per tick.
@@ -379,6 +410,43 @@ mod tests {
     }
 
     #[test]
+    fn redundant_copy_fills_gap() {
+        let mut h = Harness::new();
+        h.tick(0, LOUD);
+        // 1 is lost; 2 arrives early, carrying 1.
+        h.push(2, LOUD);
+        h.push_redundant(1);
+        h.pop();
+        h.pop();
+        assert_eq!(h.played, [Some(0), Some(1), Some(2)]);
+        assert_eq!(h.jb.target(), 1);
+    }
+
+    #[test]
+    fn redundant_copy_after_concealment_does_not_grow() {
+        let mut h = Harness::new();
+        h.tick(0, LOUD);
+        h.pop(); // 1 lost: concealed
+        h.push(2, LOUD);
+        h.push_redundant(1);
+        h.pop();
+        assert_eq!(h.played, [Some(0), None, Some(2)]);
+        assert_eq!(h.jb.target(), 1);
+    }
+
+    #[test]
+    fn redundant_copy_never_replaces_primary() {
+        let mut h = Harness::new();
+        h.tick(0, LOUD);
+        h.push(1, QUIET);
+        h.push(2, LOUD);
+        h.push_redundant(1); // a LOUD copy
+        let mut out = [1.0; FRAME_SAMPLES];
+        h.jb.pop(&mut |p, f| f.fill(p.unwrap()[2] as f32), &mut out);
+        assert!(out.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
     fn late_packet_grows_only_once() {
         let mut h = Harness::new();
         h.tick(0, LOUD);
@@ -448,6 +516,17 @@ mod tests {
         h.tick(1000, LOUD);
         h.tick(1001, LOUD);
         assert_eq!(h.played, [Some(0), Some(1000), Some(1001)]);
+    }
+
+    #[test]
+    fn depth_counts_buffered_frames() {
+        let mut h = Harness::new();
+        h.push(40, LOUD);
+        assert_eq!(h.jb.depth(), 1);
+        h.pop();
+        assert_eq!(h.jb.depth(), 0);
+        h.push(42, LOUD);
+        assert_eq!(h.jb.depth(), 2); // 41 is a gap
     }
 
     #[test]

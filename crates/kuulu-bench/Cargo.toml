@@ -8,3 +8,8 @@ publish.workspace = true
 [dependencies]
 assert_no_alloc = "1.1.2"
 kuulu-audio = { path = "../kuulu-audio" }
+kuulu-client = { path = "../kuulu-client" }
+kuulu-proto = { path = "../kuulu-proto" }
+opus = "0.4.0"
+# Same libopus as `opus`; only for opus_packet_has_lbrr, which `opus` lacks.
+opusic-sys = "0.7.6"

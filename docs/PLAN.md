@@ -104,7 +104,33 @@ Kohinanpoisto lisää noin 10 ms, joten se on oletuksena pois päältä ja sen v
 
 **Jitter buffer:** tavoite yksi kehys, enintään kuusi (60 ms). Puskuri kasvaa heti myöhästyneen paketin jälkeen ja kutistuu hitaasti, yksi kehys kahden sekunnin välein, pudottamalla kehyksen hiljaisuuden aikana. Sama mekanismi korjaa äänilaitteiden kellojen ajautumisen.
 
-**Pakettihäviöt:** Opuksen sisäinen FEC toimii vain SILK- ja hybriditilassa, ei low-delay-tilassa. Siksi oletuksena jokainen paketti kantaa myös edellisen kehyksen (redundanssi, noin 2 × 32 kbit/s). Vaihtoehto on VOIP-tila ja sisäinen FEC, joka lisää look-aheadia 4 ms. Valinta tehdään mittaamalla vaiheessa M3.
+**Pakettihäviöt:** Opuksen sisäinen FEC toimii vain SILK- ja hybriditilassa, ei low-delay-tilassa. Siksi oletuksena jokainen paketti kantaa myös edellisen kehyksen (redundanssi, noin 2 × 32 kbit/s). Vaihtoehto oli VOIP-tila ja sisäinen FEC, joka lisää look-aheadia 4 ms. Valinta tehtiin mittaamalla vaiheessa M3 (alla).
+
+**Mittaus M3 (`kuulu-bench fec-compare`).** 60 s synteettistä puhetta oikean kooderin ja jitter bufferin läpi simuloidulla kellolla, kaksi netem-hyppyä (puhuja → palvelin → kuulija), siemen 1. FEC:tä ajetaan VOIP-tilassa 32 kbit/s:n tavoitteella, ja kooderin odotettu häviö (`packet_loss_perc`) käydään läpi. Paikatuksi lasketaan vain kehys, joka soitetaan redundanttisesta kopiosta tai oikeasta FEC-datasta (LBRR, tarkistettu `opus_packet_has_lbrr`-kutsulla). Prosentit ovat soitetuista kehyksistä. "Johdolla" lisää jokaiseen pakettiin 68 tavua (Kuulun otsake 12, IPv4 20, UDP 8, QUIC noin 28); IPv6 lisää 20 tavua. Laatu on aaltomuotoon perustuva välimittari: lähteeseen verrattuna se rankaisee SILKiä, joten häviön vahinko mitataan saman tilan häviöttömään (lan) ajoon samoilla kooderiasetuksilla.
+
+| Profiili | Tila | Opus kbit/s | Johdolla kbit/s | Look-ahead | Paketteja, joissa FEC | Verkkohäviö | Paikattu | PLC | SNR häviöttömään | Huonot kehykset |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| koti | redundanssi | 66,1 | 120,5 | 2,5 ms | 100 % | 2,28 % | 1,90 % | 0,42 % | 39,5 dB | 0,27 % |
+| koti | FEC, 2 % | 32,5 | 86,9 | 6,5 ms | 0 % | 2,28 % | 0 % | 2,32 % | 35,7 dB | 0,54 % |
+| koti | FEC, 5 % | 32,7 | 87,1 | 6,5 ms | 0 % | 2,28 % | 0 % | 2,32 % | 35,9 dB | 0,71 % |
+| koti | FEC, 6 % | 30,6 | 85,0 | 6,5 ms | 68 % | 2,28 % | 1,28 % | 1,03 % | 36,8 dB | 0,24 % |
+| koti | FEC, 10 % | 31,8 | 86,2 | 6,5 ms | 75 % | 2,28 % | 1,43 % | 0,88 % | 36,7 dB | 0,07 % |
+| koti | FEC, 20 % | 31,9 | 86,3 | 6,5 ms | 75 % | 2,28 % | 1,43 % | 0,88 % | 37,0 dB | 0,07 % |
+| huono mobiili | redundanssi | 66,1 | 120,5 | 2,5 ms | 100 % | 10,45 % | 18,15 % | 18,17 % | 15,3 dB | 7,20 % |
+| huono mobiili | FEC, 2 % | 32,5 | 86,9 | 6,5 ms | 0 % | 10,43 % | 0 % | 35,40 % | 9,7 dB | 13,18 % |
+| huono mobiili | FEC, 6 % | 30,6 | 85,0 | 6,5 ms | 68 % | 10,44 % | 12,09 % | 23,55 % | 13,8 dB | 7,47 % |
+| huono mobiili | FEC, 10 % | 31,8 | 86,2 | 6,5 ms | 75 % | 10,44 % | 13,36 % | 22,28 % | 13,9 dB | 6,53 % |
+| huono mobiili | FEC, 20 % | 31,9 | 86,3 | 6,5 ms | 75 % | 10,44 % | 13,36 % | 22,28 % | 14,3 dB | 6,31 % |
+
+Havainnot:
+
+- **FEC ei toimi todellisella kotihäviöllä.** Kun kooderille kerrotaan todellinen päästä päähän -häviö (noin 2 %) tai 5 %, libopus ei lisää FEC-dataa lainkaan, ja FEC-tila on pelkkää PLC:tä (2,3 % kehyksistä paikataan PLC:llä, redundanssilla 0,4 %). FEC kytkeytyy päälle vasta asetuksella 6 %, ja silloinkin vain puhekehyksiin (68–75 % paketeista, ei taukoihin).
+- **Päälle kytkettynäkin FEC paikkaa vähemmän:** kotiprofiililla 1,4 % kehyksistä FEC:llä ja 0,9 % PLC:llä, redundanssilla 1,9 % ja 0,4 %. Redundanssin kopio on bitilleen sama kuin kadonnut kehys (39,5 dB häviöttömään verrattuna, FEC:llä noin 37 dB). Huonojen kehysten osuus on FEC 10 %:lla pienempi (0,07 % vs. 0,27 %), mutta ero on muutaman kehyksen luokkaa ja aaltomuotomittarin herkkä kohta; synteettisellä puheella sitä ei voi pitää ratkaisevana.
+- **Bittinopeus:** FEC ei lisää bittinopeutta, koska LBRR otetaan samasta 32 kbit/s:n budjetista (pääkehyksen laadun kustannuksella). Redundanssi kaksinkertaistaa Opus-datan (66 vs. noin 32 kbit/s), mutta johdolla ero on pienempi, 120 vs. 86 kbit/s (+40 %), koska otsakkeet maksavat 100 pakettia sekunnissa kummallakin noin 54 kbit/s.
+- **Latenssi:** FEC:n VOIP-tila lisää 4 ms look-aheadia: budjetti nousisi 43,5 ms:stä 47,5 ms:iin. Redundanssi ei muuta budjettia.
+- **Huono mobiiliyhteys:** kumpikaan ei riitä: kaksi ±30 ms hyppyä tekee ±60 ms päästä päähän, mikä ylittää jitter bufferin 60 ms katon, ja suuri osa kehyksistä myöhästyy. Redundanssi on silti selvästi parempi (PLC 18 % vs. 22 % FEC 10 %:lla). **Hallitus 27.10.2026: noin 18 % piilotettuja (myöhästyneitä, ei hävinneitä) kehyksiä hyväksytään toistaiseksi; palataan asiaan M6:n mittauksissa.**
+
+**Päätös (hallitus 27.10.2026):** redundanssi on oletus, ja Opuksen sisäinen FEC hylätään v1:stä. FEC lisäisi 4 ms look-aheadia, kytkeytyy päälle vasta kun kooderin odotettu häviö on vähintään 6 %, ja paikkaa vähemmän kehyksiä kuin redundanssi. Redundanssin hinta on noin 34 kbit/s enemmän liikennettä johdolla. Mittauksen rajoitukset: synteettinen puhe, aaltomuotomittari, yksi siemen.
 
 **Reaaliaikasäännöt äänisäikeessä ja callbackeissa:** ei muistinvarausta, ei lukkoja, ei I/O:ta eikä lokitusta. Säikeiden välinen data kulkee vain lukottomilla rengaspuskureilla. Säännön noudattaminen varmistetaan testeissä (assert\_no\_alloc).
 
@@ -122,6 +148,8 @@ Jokaisella clientillä on yksi QUIC-yhteys palvelimeen (oletuksena UDP 7700). Oh
 | seq | u16 | Kehyksen järjestysnumero, kiertää ympäri |
 | timestamp | u32 | Näytelaskuri 48 kHz:llä |
 | payload | loput | Opus-kehys (+ edellinen kehys, jos redundanssi) |
+
+**Redundanssipayload** (flags-kentän redundanssibitti päällä; **hyväksytty, hallitus 27.10.2026**): `edellisen pituus u8 | edellinen Opus-kehys | nykyinen Opus-kehys`. Pituus 0 tarkoittaa, ettei edellistä kehystä ole (virran alku tai kehys ei mahdu). Otsake ei muutu; muoto on määritelty tiedostossa `kuulu-proto/src/redundancy.rs`.
 
 Palvelin ei pura ääntä. Se tarkistaa lähettäjän, kirjoittaa sender-kentän ja välittää paketin muille saman kanavan jäsenille.
 
@@ -263,9 +291,11 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 - [x] kuulu-server: QUIC, kättely, yksi kanava ja datagrammien välitys
 - [x] kuulu-client: yhteys, sessio ja uudelleenyhdistys
 - [x] Verkkoemulaattori ja häviöprofiilit
-- [ ] Mittaus: redundanssi vai Opus FEC; päätös kirjataan tähän dokumenttiin
+- [x] Headless-client: kuulu-audio kytketty kuulu-clientiin (`kuulu_client::voice`)
+- [x] Hyväksymistesti: kaksi headless-clienttiä palvelimen ja kotiprofiilin läpi (`kuulu-client/tests/speech.rs`)
+- [x] Mittaus: redundanssi vai Opus FEC; päätös kirjataan tähän dokumenttiin (redundanssi, ks. Pakettihäviöt)
 
-**Valmis kun:** kaksi headless-clienttiä puhuu palvelimen kautta, ja kotiyhteysprofiililla puhe pysyy ymmärrettävänä jitter bufferin pysyessä enintään kahdessa kehyksessä.
+**Valmis kun:** kaksi headless-clienttiä puhuu palvelimen kautta, ja kotiyhteysprofiililla (1 % häviö ja ±5 ms jitter kummallakin hypyllä) puhe pysyy ymmärrettävänä jitter bufferin syvyyden 95. persentiilin pysyessä enintään kahdessa kehyksessä. Hallitus päätti tulkinnan 27.10.2026: kaksi ±5 ms hyppyä voi joillakin toistovaiheilla vaatia hetkellisesti kolmannen kehyksen (simuloidussa testissä 3/10 siemenestä, noin 6 % ajasta), joten raja koskee syvyyden 95. persentiiliä eikä tavoitteen maksimia. Kriteeri tarkistetaan simuloidulla kellolla (`voice::tests::home_profile_keeps_jitter_buffer_within_two_frames`), reaaliaikainen QUIC-testi (`tests/speech.rs`) tarkistaa toimituksen ja laadun.
 
 ### M4 – Puheominaisuudet
 
@@ -289,6 +319,7 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 ### M6 – Mittaus, kovennus ja 0.1-beta
 
 - [ ] Laitteistomittaus ja vertailu Mumbleen, TeamSpeakiin ja Discordiin
+- [ ] Huono mobiiliyhteys: noin 18 % myöhästyneitä kehyksiä hyväksyttiin M3:ssa toistaiseksi (jitter bufferin 60 ms katto); arvioidaan uudelleen
 - [ ] Fuzzaus ja kuormitustesti 100 clientillä
 - [ ] Docker-image, docker-compose ja palvelimen asennusohje
 - [ ] Julkinen 0.1.0-beta
@@ -347,7 +378,7 @@ Read it before starting any work.
 
 - [x] **Lisenssi:** AGPL-3.0-only (päätetty 27.10.2026). Pitää myös hostatut johdannaiset avoimina.
 - [ ] **Nimi:** tavaramerkkihaku, verkkotunnus ja GitHub-organisaatio.
-- [ ] **Pakettihäviöt:** redundanssi vai Opuksen sisäinen FEC; ratkaistaan mittaamalla vaiheessa M3.
+- [x] **Pakettihäviöt:** redundanssi (päätetty 27.10.2026); Opuksen sisäinen FEC hylätty v1:stä. Perustelut kohdassa Pakettihäviöt.
 - [ ] **Koodiallekirjoitus:** Windows- ja macOS-sertifikaattien kustannukset ja kuka hallinnoi avaimia.
 - [ ] **Windowsin exclusive-tila:** vaatii oman WASAPI-toteutuksen cpalin rinnalle; v1 vai myöhemmin.
 - [ ] **Päästä päähän -salaus:** menetelmä ja aikataulu v1:n jälkeen.

@@ -10,11 +10,12 @@ mod jitter;
 mod mixer;
 #[cfg(test)]
 mod no_alloc_tests;
+pub mod quality;
 mod vad;
 
 pub use codec::{Decoder, Encoder, MAX_PAYLOAD};
 pub use framer::Framer;
-pub use jitter::JitterBuffer;
+pub use jitter::{JitterBuffer, STOP_AFTER_MISSING};
 pub use mixer::Mixer;
 pub use vad::{Vad, level};
 
