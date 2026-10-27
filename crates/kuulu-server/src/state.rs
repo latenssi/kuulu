@@ -55,6 +55,11 @@ impl Member {
         }
     }
 
+    /// Display name, cleaned of control characters and length-limited.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     fn to_proto(&self, session_id: u32) -> control::Member {
         control::Member {
             session_id,

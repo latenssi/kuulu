@@ -143,10 +143,9 @@ async fn serve(incoming: quinn::Incoming, shared: Arc<Shared>) -> Result<(), Box
     let Some(key) = identity::verify(&conn, &hello.public_key, &hello.identity_proof) else {
         return reject(send, Reason::InvalidIdentity).await;
     };
-    shared.store.lock().unwrap().seen(&key, &hello.display_name);
-
     let (control, mut outbox) = mpsc::channel(CONTROL_QUEUE);
     let member = Member::new(conn.clone(), control.clone(), key, &hello.display_name);
+    shared.store.lock().unwrap().seen(&key, member.name());
     let welcome = Welcome {
         server_version: env!("CARGO_PKG_VERSION").into(),
         server_name: shared.name.clone(),
