@@ -4,6 +4,17 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+# Keep the RUSTSEC ids in sync with .cargo/audit.toml.
+ignore = [
+    # zip 4.x via tauri-plugin-updater (newest 2.x release): built only on
+    # Windows and used only for legacy .zip updater bundles, which we do not
+    # ship; updates are signature-checked before extraction. Remove once the
+    # plugin depends on zip >= 9.
+    { id = "RUSTSEC-2026-0367", reason = "zip via tauri-plugin-updater, not reachable" },
+    { id = "RUSTSEC-2026-0368", reason = "zip via tauri-plugin-updater, not reachable" },
+    { id = "RUSTSEC-2026-0369", reason = "zip via tauri-plugin-updater, not reachable" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: unmaintained build-time dep of Tauri's GTK stack" },
+]
 
 [licenses]
 version = 2
@@ -11,11 +22,14 @@ unused-allowed-license = "allow"
 allow = [
     "AGPL-3.0-only",
     "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
     "BSD-1-Clause",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
+    "MPL-2.0",
     "Unicode-3.0",
     "Zlib",
 ]

@@ -230,10 +230,10 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 
 ### M1 – Itsestään päivittyvä kuori
 
-- [ ] Tauri 2 + Svelte -sovellus, joka näyttää versionumeron
-- [ ] Updater-plugin: julkinen avain konfiguraatiossa, stable- ja beta-osoitteet
+- [x] Tauri 2 + Svelte -sovellus, joka näyttää versionumeron
+- [x] Updater-plugin: julkinen avain konfiguraatiossa, stable- ja beta-osoitteet
 - [ ] Julkaisuworkflow: tagista allekirjoitettu build kolmelle alustalle, release-luonnos ja päivitystiedosto
-- [ ] Julkaisuohje docs/RELEASING.md
+- [x] Julkaisuohje docs/RELEASING.md
 
 **Valmis kun:** asennettu v0.0.1 päivittyy itsestään versioon v0.0.2 Windowsilla, macOS:llä ja Linuxilla.
 

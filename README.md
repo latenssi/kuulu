@@ -14,6 +14,9 @@ the full plan and milestones.
 - `crates/kuulu-client` – client-side QUIC session
 - `crates/kuulu-server` – self-hosted server binary
 - `crates/kuulu-bench` – latency measurement and network emulator
+- `apps/desktop` – Tauri 2 + Svelte desktop app
+
+Releases and auto-update: [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Development
 
