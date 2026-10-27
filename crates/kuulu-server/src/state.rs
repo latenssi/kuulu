@@ -160,6 +160,14 @@ impl State {
         self.admins.contains(key)
     }
 
+    pub fn no_admins(&self) -> bool {
+        self.admins.is_empty()
+    }
+
+    pub fn is_banned(&self, key: &PublicKey) -> bool {
+        self.banned.contains(key)
+    }
+
     /// Makes `key` an admin, announcing it for sessions already connected.
     pub fn grant_admin(&mut self, key: PublicKey) {
         if !self.admins.insert(key) {

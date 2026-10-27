@@ -482,3 +482,48 @@ async fn bootstrap_invite_makes_the_first_admin() {
         .unwrap();
     cleanup(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn old_bootstrap_invite_dies_once_an_admin_is_configured() {
+    let dir = data_dir("bootstrap-stale", &[], &["General"]);
+    let (server, _, _, _) = start(&dir);
+    let token = server.admin_invite().unwrap().to_string();
+    server.close().await;
+    drop(server);
+
+    // The operator adds an admin to kuulu.toml and restarts within 24 h.
+    let admin_key = IdentityKey::generate();
+    write_config(&dir, 0, 100, &[&admin_key], &["General"]);
+    let (server, addr, fp, _) = start(&dir);
+    assert_eq!(server.admin_invite(), None);
+    assert_eq!(
+        guest(addr, &fp, &token).await.err(),
+        Some(Error::Rejected(Reason::InviteExpired))
+    );
+    cleanup(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn banned_keys_never_use_an_invite() {
+    let admin_key = IdentityKey::generate();
+    let banned_key = IdentityKey::generate();
+    let dir = data_dir("ban-invite", &[&admin_key], &["General"]);
+    let (server, addr, fp, invite) = start(&dir);
+    let admin = Client::connect_as(addr, &fp, &admin_key, "admin", None)
+        .await
+        .unwrap();
+    let banned = Client::connect_as(addr, &fp, &banned_key, "troll", Some(&invite))
+        .await
+        .unwrap();
+    admin
+        .request(Request::Ban(banned.session_id().unwrap()))
+        .await
+        .unwrap();
+
+    let once = server.create_invite(1, Duration::from_secs(60)).unwrap();
+    let rejoin = Client::connect_as(addr, &fp, &banned_key, "troll", Some(&once)).await;
+    assert_eq!(rejoin.err(), Some(Error::Rejected(Reason::Banned)));
+    // The single use is still there.
+    guest(addr, &fp, &once).await.unwrap();
+    cleanup(&dir);
+}

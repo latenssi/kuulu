@@ -68,7 +68,8 @@ pub(crate) enum Op {
     RenameChannel(u32, String),
     DeleteChannel(u32),
     CreateInvite(NewInvite),
-    Admit(PublicKey, Option<Hash>, oneshot::Sender<Admission>),
+    /// Key, invite hash, whether an admin invite may still be used.
+    Admit(PublicKey, Option<Hash>, bool, oneshot::Sender<Admission>),
     /// Answers once every earlier write is on disk.
     Flush(mpsc::Sender<()>),
 }
@@ -110,13 +111,23 @@ const SCHEMA: &str = "
 impl Store {
     /// Opens `kuulu.db` in `dir`, or an in-memory database for `None`. On
     /// the very first open the channels are created from `seed`; later the
-    /// seed is ignored.
-    pub fn open(dir: Option<&Path>, seed: &[ChannelConfig]) -> io::Result<(Self, Loaded)> {
+    /// seed is ignored. Once an admin exists (`config_admins`, or one in the
+    /// database), bootstrap admin invites are deleted: a leaked old link must
+    /// not make another admin.
+    pub fn open(
+        dir: Option<&Path>,
+        seed: &[ChannelConfig],
+        config_admins: bool,
+    ) -> io::Result<(Self, Loaded)> {
         let mut db = match dir {
             Some(dir) => open_db(dir)?,
             None => Connection::open_in_memory().map_err(io::Error::other)?,
         };
         let loaded = load(&mut db, seed).map_err(io::Error::other)?;
+        if config_admins || !loaded.admins.is_empty() {
+            db.execute("DELETE FROM invites WHERE admin", [])
+                .map_err(io::Error::other)?;
+        }
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("kuulu-store".into())
@@ -135,11 +146,12 @@ impl Store {
 
     /// Whether `key` may join with invite token `invite` (empty for none).
     /// A known key may; an unknown one uses up one use of a valid invite and
-    /// is known from then on. The bootstrap admin invite is used even by a
-    /// known key, making it an admin.
-    pub async fn admit(&self, key: PublicKey, invite: &str) -> Admission {
+    /// is known from then on. While `no_admins`, the bootstrap admin invite
+    /// is used even by a known key, making it an admin; otherwise it admits
+    /// no one.
+    pub async fn admit(&self, key: PublicKey, invite: &str, no_admins: bool) -> Admission {
         let (reply, answer) = oneshot::channel();
-        self.write(Op::Admit(key, invite::hash(invite), reply));
+        self.write(Op::Admit(key, invite::hash(invite), no_admins, reply));
         answer.await.unwrap_or(Admission::Refused)
     }
 
@@ -239,8 +251,8 @@ fn apply(db: &Connection, op: Op) {
         }
         Op::DeleteChannel(id) => db.execute("DELETE FROM channels WHERE id = ?1", [id]),
         Op::CreateInvite(invite) => insert_invite(db, &invite),
-        Op::Admit(key, invite, reply) => {
-            let result = admit(db, key, invite);
+        Op::Admit(key, invite, no_admins, reply) => {
+            let result = admit(db, key, invite, no_admins);
             let _ = reply.send(*result.as_ref().unwrap_or(&Admission::Refused));
             result.map(|_| 0)
         }
@@ -267,7 +279,12 @@ pub(crate) fn insert_invite(db: &Connection, invite: &NewInvite) -> rusqlite::Re
     )
 }
 
-fn admit(db: &Connection, key: PublicKey, invite: Option<Hash>) -> rusqlite::Result<Admission> {
+fn admit(
+    db: &Connection,
+    key: PublicKey,
+    invite: Option<Hash>,
+    no_admins: bool,
+) -> rusqlite::Result<Admission> {
     let tx = db.unchecked_transaction()?;
     let known = |key| {
         tx.query_row(
@@ -283,9 +300,10 @@ fn admit(db: &Connection, key: PublicKey, invite: Option<Hash>) -> rusqlite::Res
             .query_row(
                 "UPDATE invites SET uses_left = uses_left - 1
                  WHERE hash = ?1 AND uses_left > 0 AND expires_at > unixepoch()
-                   AND (admin OR NOT EXISTS (SELECT 1 FROM identities WHERE public_key = ?2))
+                   AND CASE WHEN admin THEN ?3
+                       ELSE NOT EXISTS (SELECT 1 FROM identities WHERE public_key = ?2) END
                  RETURNING admin",
-                (hash, key),
+                (hash, key, no_admins),
                 |r| r.get(0),
             )
             .optional()?,
@@ -350,7 +368,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let (store, loaded) = Store::open(Some(&dir), &[channel(3, "General")]).unwrap();
+        let (store, loaded) = Store::open(Some(&dir), &[channel(3, "General")], false).unwrap();
         assert_eq!(loaded.channels, [channel(3, "General")]);
         assert_eq!(loaded.next_channel_id, 4);
         store.write(Op::Seen([1; 32], "a".into()));
@@ -364,7 +382,7 @@ mod tests {
         drop(store);
 
         // A changed seed has no effect once the database exists.
-        let (store, loaded) = Store::open(Some(&dir), &[channel(1, "Other")]).unwrap();
+        let (store, loaded) = Store::open(Some(&dir), &[channel(1, "Other")], false).unwrap();
         assert_eq!(loaded.channels, [channel(3, "Lobby"), channel(4, "Games")]);
         // Deleted id 5 is not reused.
         assert_eq!(loaded.next_channel_id, 6);
@@ -389,7 +407,7 @@ mod tests {
     }
 
     fn admit_token(db: &Connection, key: PublicKey, token: &str) -> Admission {
-        admit(db, key, invite::hash(token)).unwrap()
+        admit(db, key, invite::hash(token), true).unwrap()
     }
 
     #[test]
@@ -446,6 +464,12 @@ mod tests {
         assert_eq!(admit_token(&db, [1; 32], &first), Admission::Member);
         assert_eq!(admit_token(&db, [1; 32], &admin), Admission::Admin);
         assert_eq!(admit_token(&db, [2; 32], &admin), Admission::Refused);
+        // Once an admin exists, an admin invite admits no one.
+        let late = invite(&db, 1, 60, true);
+        assert_eq!(
+            admit(&db, [3; 32], invite::hash(&late), false).unwrap(),
+            Admission::Refused
+        );
         drop(db);
         let mut db = open_db(&dir).unwrap();
         assert_eq!(load(&mut db, &[]).unwrap().admins, HashSet::from([[1; 32]]));

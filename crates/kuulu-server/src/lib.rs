@@ -106,7 +106,7 @@ impl Server {
             eprintln!("max_users {} lowered to {MAX_USERS}", config.max_users);
         }
         let max_users = config.max_users.min(MAX_USERS);
-        let (store, loaded) = Store::open(dir, &seed)?;
+        let (store, loaded) = Store::open(dir, &seed, !admins.is_empty())?;
         let invites_required = dir.is_some();
         // No admin anywhere: the first to use this invite becomes one.
         let admin_invite = (invites_required && admins.is_empty() && loaded.admins.is_empty())
@@ -236,9 +236,20 @@ async fn serve(incoming: quinn::Incoming, shared: Arc<Shared>) -> Result<(), Box
         return reject(send, Reason::InvalidIdentity).await;
     };
     // Admins need no invite, so a pruned admin identity can still join.
-    let admin = shared.state.lock().unwrap().is_admin(&key);
+    // Banned keys are refused first, so they never use up an invite.
+    let (admin, banned, no_admins) = {
+        let state = shared.state.lock().unwrap();
+        (
+            state.is_admin(&key),
+            state.is_banned(&key),
+            state.no_admins(),
+        )
+    };
+    if banned {
+        return reject(send, Reason::Banned).await;
+    }
     if shared.invites_required && !admin {
-        match shared.store.admit(key, &hello.invite).await {
+        match shared.store.admit(key, &hello.invite, no_admins).await {
             Admission::Refused => return reject(send, Reason::InviteExpired).await,
             Admission::Member => {}
             Admission::Admin => {
