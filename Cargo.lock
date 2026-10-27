@@ -2016,17 +2016,24 @@ version = "0.0.0"
 dependencies = [
  "assert_no_alloc",
  "kuulu-audio",
+ "kuulu-client",
+ "kuulu-proto",
+ "opus",
+ "opusic-sys",
 ]
 
 [[package]]
 name = "kuulu-client"
 version = "0.0.0"
 dependencies = [
+ "assert_no_alloc",
  "bytes",
+ "kuulu-audio",
  "kuulu-proto",
  "kuulu-server",
  "quinn",
  "rand",
+ "rtrb",
  "tokio",
 ]
 

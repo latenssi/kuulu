@@ -50,6 +50,11 @@ impl Decoder {
             .unwrap_or(0);
         out[decoded.min(FRAME_SAMPLES)..].fill(0.0);
     }
+
+    /// Forgets the previous stream, so a new one starts clean.
+    pub fn reset(&mut self) {
+        let _ = self.0.reset_state();
+    }
 }
 
 #[cfg(test)]

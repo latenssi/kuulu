@@ -21,9 +21,12 @@ fn payload(seq: u16) -> Vec<u8> {
     format!("frame {seq}").into_bytes()
 }
 
-/// Sends `count` frames at the 10 ms frame rate.
+/// Sends `count` frames at the 10 ms frame rate. After a stall of the test
+/// runner it carries on at that rate rather than sending a burst, which the
+/// client would rightly thin out as stale and look like network loss.
 async fn talk(client: &Client, count: u16) {
     let mut tick = tokio::time::interval(FRAME);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     for seq in 0..count {
         tick.tick().await;
         client.send(flags::REDUNDANT, seq, u32::from(seq) * 480, &payload(seq));
@@ -112,16 +115,30 @@ async fn home_network_profile() {
     let a = Client::connect(via_a, &fp).await.unwrap();
     let b = Client::connect(via_b, &fp).await.unwrap();
 
-    let (_, received) = tokio::join!(talk(&a, 300), collect(&b, Duration::from_millis(500)));
+    let sent = 300;
+    let (_, received) = tokio::join!(talk(&a, sent), collect(&b, Duration::from_millis(500)));
     check(&received, a.session_id().unwrap());
-    // Two hops at 1 % loss each: expect about 6 lost of 300.
-    assert!(received.len() >= 280, "{}", received.len());
+    let max_lost = max_lost(netem::Profile::HOME, sent.into());
+    assert!(
+        received.len() >= usize::from(sent) - max_lost,
+        "{} of {sent} arrived, at most {max_lost} may be lost",
+        received.len()
+    );
     let reordered = received
         .windows(2)
         .filter(|w| w[1].header.seq < w[0].header.seq)
         .count();
     // 10 ms frames with up to ±5 ms jitter per hop do arrive out of order.
     assert!(reordered > 0);
+}
+
+/// The most packets out of `sent` that two hops of `profile` lose, bar a
+/// one-in-a-million run: the binomial mean plus five standard deviations.
+/// (Home: about 6 of 300 on average, at most 18.)
+fn max_lost(profile: netem::Profile, sent: usize) -> usize {
+    let p = 1.0 - (1.0 - profile.loss).powi(2);
+    let n = sent as f64;
+    (n * p + 5.0 * (n * p * (1.0 - p)).sqrt()).ceil() as usize
 }
 
 #[tokio::test(flavor = "multi_thread")]
