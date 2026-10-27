@@ -163,7 +163,7 @@ Palvelin ei pura ääntä. Se tarkistaa lähettäjän, kirjoittaa sender-kentän
 
 Julkinen avain ja sen todiste tulivat pakollisiksi protokollan pääversioon 1 ennen ensimmäistä julkaisua. Avaimettomia M3-vaiheen clienttejä ei ole käytössä, joten pääversiota ei nostettu.
 
-**Ohjausviestit kättelyn jälkeen:** jokaisessa clientin viestissä on `request_id`, ja palvelin vastaa jokaiseen `Response`-viestillä (OK, FORBIDDEN, NOT_FOUND tai INVALID). Pyynnöt ovat `JoinChannel`, `SetVoiceState` (oma mykistys ja kuulokkeiden mykistys) sekä ylläpitäjälle `CreateChannel`, `DeleteChannel`, `RenameChannel`, `MoveMember`, `Kick`, `Ban` ja `CreateInvite` (käyttökerrat ja voimassaolo sekunteina; `Response.invite` palauttaa tunnisteen, ja client muodostaa linkin osoitteesta ja sormenjäljestä, joilla se yhdisti). Palvelin lähettää kaikille tapahtumat `MemberJoined`, `MemberLeft`, `MemberUpdated` (nimi, kanava, mykistys, kuulokkeiden mykistys, ylläpitäjärooli `admin`), `ChannelCreated`, `ChannelDeleted` ja `ChannelRenamed` samassa järjestyksessä kuin se teki muutokset, ja vastaus tulee aina sen aiheuttamien tapahtumien jälkeen. Potku ja banni sulkevat yhteyden QUIC-sovelluskoodilla 1 (potkittu) tai 2 (bannattu), eikä client silloin yhdistä uudelleen itsestään.
+**Ohjausviestit kättelyn jälkeen:** jokaisessa clientin viestissä on `request_id`, ja palvelin vastaa jokaiseen `Response`-viestillä (OK, FORBIDDEN, NOT_FOUND tai INVALID). Pyynnöt ovat `JoinChannel`, `SetVoiceState` (oma mykistys ja kuulokkeiden mykistys) sekä ylläpitäjälle `CreateChannel`, `DeleteChannel`, `RenameChannel`, `MoveMember`, `Kick`, `Ban` ja `CreateInvite` (käyttökerrat ja voimassaolo sekunteina; `Response.invite` palauttaa tunnisteen, ja client muodostaa linkin osoitteesta ja sormenjäljestä, joilla se yhdisti). Palvelin lähettää kaikille tapahtumat `MemberJoined`, `MemberLeft`, `MemberUpdated` (nimi, kanava, mykistys, kuulokkeiden mykistys, ylläpitäjärooli `admin`, julkinen avain `public_key`), `ChannelCreated`, `ChannelDeleted` ja `ChannelRenamed` samassa järjestyksessä kuin se teki muutokset, ja vastaus tulee aina sen aiheuttamien tapahtumien jälkeen. Jäsenen julkinen avain on se, jonka palvelin varmisti kättelyssä; sillä client tunnistaa saman käyttäjän eri sessioissa, esimerkiksi käyttäjäkohtaista äänenvoimakkuutta varten. Potku ja banni sulkevat yhteyden QUIC-sovelluskoodilla 1 (potkittu) tai 2 (bannattu), eikä client silloin yhdistä uudelleen itsestään.
 
 **Mykistys palvelimella:** palvelin pudottaa mykistetyn jäsenen äänipaketit eikä lähetä ääntä kuulokkeensa mykistäneelle. Kuulokkeiden mykistys mykistää myös mikrofonin. Uudelleenyhdistyksen jälkeen client palauttaa kanavansa ja mykistyksensä itse.
 
@@ -176,7 +176,7 @@ Julkinen avain ja sen todiste tulivat pakollisiksi protokollan pääversioon 1 e
 - **Konfiguraatio:** `kuulu.toml`: palvelimen nimi, portti, kutsulinkkien osoite (`public_host`), käyttäjien enimmäismäärä (`max_users`, oletus 100), ylläpitäjien julkiset avaimet heksana ja aloituskanavat. Ensimmäinen käynnistys luo oletuskonfiguraation ja tulostaa ylläpitäjän kutsulinkin. Palvelin vain lukee tiedostoa; tyhjä tai virheellinen tiedosto on virhe eikä johda oletusarvoihin.
 - **Kanavat:** `[[channels]]` luo kanavat vain ensimmäisellä käynnistyksellä. Sen jälkeen kanavat ovat SQLitessä, ja ylläpitäjät hallitsevat niitä clientistä; tiedoston kanavien muokkaus ei enää vaikuta. Kanavan id on pysyvä eikä sitä käytetä uudelleen. Jäsenet liittyvät pienimmän id:n kanavaan. Kanavia on enintään 64.
 - **Tila:** yhdistetyt sessiot pidetään muistissa, ja muistissa oleva tila on määräävä. SQLiteen (`kuulu.db`, WAL-tila) tallentuvat kanavat, bannit, kutsut ja tunnetut identiteetit (enintään 10 000 viimeksi nähtyä). Kirjoitukset tehdään omassa säikeessään, joten levy ei koskaan hidasta äänen välitystä. Roolit tulevat `kuulu.toml`:n ylläpitäjäavaimista ja `kuulu.db`:n käynnistysylläpitäjistä.
-- **Kokorajat:** `max_users` rajataan niin, että pahimman tapauksen `Welcome` (pisimmät nimet, kaikki kanavat) mahtuu yhteen 64 KiB:n ohjauskehykseen. Raja tarkistetaan käännösaikana, ja se on nyt 369 käyttäjää.
+- **Kokorajat:** `max_users` rajataan niin, että pahimman tapauksen `Welcome` (pisimmät nimet, kaikki kanavat) mahtuu yhteen 64 KiB:n ohjauskehykseen. Raja tarkistetaan käännösaikana, ja se on nyt 301 käyttäjää.
 - **Kutsut:** ylläpitäjä luo kutsun clientistä tai komentoriviltä (`kuulu-server invite --uses 10 --expires 7d [--host HOST]`, myös `invite list` ja `invite revoke ID`); komento toimii palvelimen ollessa käynnissä. Kutsulla on satunnainen tunniste, voimassaoloaika ja käyttökertojen enimmäismäärä. Uusi julkinen avain tarvitsee voimassa olevan kutsun, ja liittyminen kuluttaa yhden käyttökerran atomisesti. Tunnettu avain liittyy ilman kutsua. Karsittu identiteetti on taas tuntematon ja tarvitsee kutsun; ylläpitäjät ja bannit eivät karsiudu. Kutsu kuluu, vaikka palvelin olisi täynnä, mutta avain on silloin jo tunnettu.
 - **Ensimmäinen ylläpitäjä:** palvelin ei kirjoita `kuulu.toml`:iin. Jos ylläpitäjiä ei ole tiedostossa eikä `kuulu.db`:ssä, käynnistys luo kertakäyttöisen, 24 tuntia voimassa olevan ylläpitäjäkutsun ja tulostaa linkin; uusi käynnistys korvaa vanhan. Linkillä liittyvä avain tallentuu `kuulu.db`:n `admins`-tauluun ja on siitä lähtien ylläpitäjä, myös jo yhdistetyissä sessioissa (`MemberUpdated`). Palvelin tulostaa avaimen, jonka voi siirtää `kuulu.toml`:iin. Kun yksikin ylläpitäjä on olemassa, ylläpitäjäkutsu ei kelpaa, ja käynnistys poistaa vanhat, joten lokeihin jäänyt linkki ei tee uutta ylläpitäjää. Bannattu avain hylätään ennen kutsun tarkistusta, joten se ei kuluta kutsua.
 - **Oikeudet v1:** ylläpitäjä ja jäsen. Ylläpitäjä voi luoda ja poistaa kanavia, siirtää, potkia ja bannata käyttäjiä.
@@ -196,7 +196,7 @@ Näkymät noudattavat [mockupia](https://claude.ai/artifact/VX6zrxTnwTBNUzJEf3LX
 
 **Kutsulinkit:** muoto `kuulu://<host>:<portti>/join?t=<kutsu>&fp=<sertifikaatin SHA-256>`. Linkki toimii myös https-osoitteena, joka ohjaa sovellukseen tai lataussivulle. Deep link -käsittely tehdään tauri-plugin-deep-linkillä.
 
-**Push-to-talk:** globaali näppäin tai hiiren lisänäppäin. Windowsilla ja X11:llä tämä onnistuu suoraan. macOS vaatii saavutettavuusoikeuden, ja Waylandilla käytetään GlobalShortcuts-portaalia. Jos globaali näppäin ei ole käytettävissä, client tarjoaa VAD:n ja kertoo syyn.
+**Push-to-talk:** globaali näppäin tai hiiren lisänäppäin. Client tarkkailee syötettä passiivisella käyttöjärjestelmäkoukulla (monio) kuluttamatta sitä, joten peli saa saman näppäimen. Windowsilla ja X11:llä tämä onnistuu suoraan, ja macOS vaatii saavutettavuusoikeuden. Waylandilla sovelluksille ei ole tällaista koukkua, joten client käyttää VAD:ia ja kertoo syyn; sama pätee, jos koukku ei käynnisty.
 
 **Paikallinen data:** asetukset JSON-tiedostona sovelluksen konfiguraatiokansiossa; identiteettiavain käyttöjärjestelmän avainnipussa.
 
@@ -300,19 +300,19 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 ### M4 – Puheominaisuudet
 
 - [x] Useat kanavat ja kanavan vaihto
-- [ ] Push-to-talk globaalilla näppäimellä ja VAD
+- [x] Push-to-talk globaalilla näppäimellä ja VAD
 - [x] Mykistys ja kuulokkeiden mykistys
-- [ ] Käyttäjäkohtainen äänenvoimakkuus
+- [x] Käyttäjäkohtainen äänenvoimakkuus
 - [x] Ylläpitäjän toiminnot: kanavien hallinta, siirto, potku ja banni
 
 **Valmis kun:** neljä käyttäjää puhuu samassa kanavassa, ja kaikki kontrollit toimivat kolmella alustalla.
 
 ### M5 – Käyttöliittymä ja liittyminen
 
-- [ ] Mockupin kolme näkymää
-- [ ] Identiteettiavain käyttöjärjestelmän avainnippuun
-- [ ] Kutsulinkit, sertifikaatin kiinnitys ja deep link (palvelin valmis: kutsut, `kuulu-server invite`, ensimmäinen ylläpitäjä; client kesken)
-- [ ] Latenssinäyttö ja asetusten latenssibudjetti
+- [x] Mockupin kolme näkymää
+- [x] Identiteettiavain käyttöjärjestelmän avainnippuun
+- [x] Kutsulinkit, sertifikaatin kiinnitys ja deep link
+- [x] Latenssinäyttö ja asetusten latenssibudjetti
 
 **Valmis kun:** uusi käyttäjä pääsee kutsulinkistä puhumaan alle minuutissa ilman tiliä.
 

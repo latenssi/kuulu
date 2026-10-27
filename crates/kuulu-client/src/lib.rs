@@ -51,7 +51,9 @@ pub enum Error {
 }
 
 impl Error {
-    fn is_fatal(&self) -> bool {
+    /// Whether retrying cannot help. Connected clients stop on these;
+    /// others (transport failures, a full server) are worth retrying.
+    pub fn is_fatal(&self) -> bool {
         // A full server may have room later.
         !matches!(
             self,
@@ -260,6 +262,29 @@ impl Client {
         match &*self.status.borrow() {
             Status::Connected { session_id, .. } => Some(*session_id),
             _ => None,
+        }
+    }
+
+    /// Round-trip time to the server, smoothed by QUIC; `None` while
+    /// reconnecting.
+    pub fn rtt(&self) -> Option<Duration> {
+        match &*self.status.borrow() {
+            Status::Connected { conn, .. } => Some(conn.rtt()),
+            _ => None,
+        }
+    }
+
+    /// Waits until the client has stopped for good (e.g. kicked, banned, or
+    /// a version reject on reconnect) and returns why.
+    pub async fn stopped(&self) -> Error {
+        let mut status = self.status.clone();
+        loop {
+            if let Status::Failed(e) = &*status.borrow_and_update() {
+                return e.clone();
+            }
+            if status.changed().await.is_err() {
+                return Error::Connection("client stopped".into());
+            }
         }
     }
 

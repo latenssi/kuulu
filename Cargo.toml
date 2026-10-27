@@ -1,9 +1,15 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/desktop/src-tauri"]
+# Vendored, patched dependencies; see their PATCHES.md.
+exclude = ["third_party"]
 
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 publish = false
+
+[patch.crates-io]
+# macOS stop fix, see third_party/monio/PATCHES.md.
+monio = { path = "third_party/monio" }

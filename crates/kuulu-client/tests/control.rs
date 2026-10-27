@@ -111,21 +111,18 @@ async fn channels_isolate_voice_and_switching_works() {
         .unwrap();
     // No display name, as clients from before display names sent.
     let b = guest(addr, &fp, &invite).await.unwrap();
-    let c = Client::connect_as(
-        addr,
-        &fp,
-        &IdentityKey::generate(),
-        "Cecilia",
-        Some(&invite),
-    )
-    .await
-    .unwrap();
+    let c_key = IdentityKey::generate();
+    let c = Client::connect_as(addr, &fp, &c_key, "Cecilia", Some(&invite))
+        .await
+        .unwrap();
     let c_id = c.session_id().unwrap();
     until(&a, |s| s.members.len() == 3).await;
     let state = a.state();
     assert_eq!(state.channels[&2], "Games");
     assert_eq!(state.members[&b.session_id().unwrap()].display_name, "");
     assert_eq!(state.members[&c_id].display_name, "Cecilia");
+    // The server publishes the verified identity key.
+    assert_eq!(state.members[&c_id].public_key, c_key.public_key());
 
     let mut events = a.events();
     c.request(Request::JoinChannel(2)).await.unwrap();
@@ -227,11 +224,14 @@ async fn admin_actions_need_the_admin_role() {
         Err(RequestError::Invalid)
     );
 
+    assert!(other.rtt().is_some());
     admin.request(Request::Kick(other_id)).await.unwrap();
+    assert_eq!(timeout(WAIT, other.stopped()).await.unwrap(), Error::Kicked);
     assert_eq!(
         timeout(WAIT, other.recv()).await.unwrap(),
         Err(Error::Kicked)
     );
+    assert_eq!(other.rtt(), None);
     until(&member, |s| !s.members.contains_key(&other_id)).await;
     // A kick is not a ban.
     Client::connect_as(addr, &fp, &other_key, "other", Some(&invite))

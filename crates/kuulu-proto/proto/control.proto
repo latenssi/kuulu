@@ -97,6 +97,9 @@ message Member {
   // The member's key has the admin role. A change at runtime arrives as
   // member_updated.
   bool admin = 6;
+  // The member's Ed25519 identity key (32 bytes), as verified by the server
+  // at the handshake. Stable across sessions, unlike session_id.
+  bytes public_key = 7;
 }
 
 message MemberLeft {

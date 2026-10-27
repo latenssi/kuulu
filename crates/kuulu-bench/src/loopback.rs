@@ -38,8 +38,8 @@ fn start() -> Result<std::convert::Infallible, device::Error> {
     };
     // Streams wake the audio thread, so it exists first and gets its rings
     // once both devices are open.
-    let (capture, input) = device::capture(audio.thread().clone())?;
-    let (playback, output) = device::playback(audio.thread().clone())?;
+    let (capture, input) = device::capture(None, audio.thread().clone())?;
+    let (playback, output) = device::playback(None, audio.thread().clone())?;
     rings_tx
         .send((input, output))
         .map_err(|_| "audio thread exited")?;

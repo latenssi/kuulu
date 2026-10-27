@@ -12,7 +12,21 @@ publish.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-updater = "2"
-# Required by tauri::generate_context! when plugin config is present.
+keyring = "4"
+kuulu-audio = { path = "../../../crates/kuulu-audio" }
+kuulu-client = { path = "../../../crates/kuulu-client" }
+# Passive global push-to-talk input hook (see src/ptt.rs).
+monio = "0.1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-updater = "2"
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
+url = "2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# tauri-plugin-deep-link 2.6.2 does not build with rust-ini 0.21.2+, which
+# added fields to a struct it builds. Drop once a deep-link release fixes it.
+rust-ini = "=0.21.1"
