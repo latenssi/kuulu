@@ -8,13 +8,14 @@
 //!   which the device plays during the following period.
 //!
 //! After each callback the audio thread runs: it encodes complete frames
-//! (zero-delay network into the jitter buffer) and tops up the playback ring.
+//! (zero-delay network into the jitter buffer) and tops up the playback ring
+//! with the production refill policy, `device::playback_wants_frame`.
 //! The playback clock's phase relative to capture is swept across a whole
 //! frame, so the worst case (a packet arriving just after a playout tick)
 //! is included. Delay is found by cross-correlating the click with the
 //! output, exact to the sample. Exits non-zero if it exceeds the budget.
 
-use kuulu_audio::device::DEVICE_BUFFER;
+use kuulu_audio::device::{DEVICE_BUFFER, playback_wants_frame};
 use kuulu_audio::{
     Decoder, Encoder, FRAME_SAMPLES, Frame, Framer, JitterBuffer, Mixer, SAMPLE_RATE,
 };
@@ -24,7 +25,7 @@ use std::process::ExitCode;
 
 /// Latency budget without network, docs/PLAN.md: capture 5 + Opus 12.5 +
 /// jitter buffer 10 + playback 5.
-const BUDGET_MS: f64 = 32.5;
+pub const BUDGET_MS: f64 = 32.5;
 const PERIOD: usize = DEVICE_BUFFER as usize;
 const CLICK_LEN: usize = 480;
 /// The click starts this far into the run, after codec and buffer start-up.
@@ -206,7 +207,7 @@ impl Sim {
         });
         self.captured.clear();
 
-        while self.playback_ring.len() < PERIOD {
+        while playback_wants_frame(self.playback_ring.len(), PERIOD) {
             let mut frame = [0.0; FRAME_SAMPLES];
             let Self {
                 decoder,

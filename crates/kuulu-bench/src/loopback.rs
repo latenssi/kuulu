@@ -1,15 +1,19 @@
 //! Microphone → framing → Opus → jitter buffer → mixer → speakers, without
 //! a network. Runs until interrupted, printing device stats every second.
 
+use crate::latency::BUDGET_MS;
 use assert_no_alloc::assert_no_alloc;
 use kuulu_audio::device::{self, Input, Output};
-use kuulu_audio::{Decoder, Encoder, FRAME_SAMPLES, Framer, JitterBuffer, Mixer};
+use kuulu_audio::{Decoder, Encoder, FRAME_SAMPLES, Framer, JitterBuffer, Mixer, SAMPLE_RATE};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+
+/// Opus restricted low-delay look-ahead, as measured by `latency`.
+const LOOKAHEAD_MS: f64 = 2.5;
 
 pub fn run() -> ExitCode {
     match start() {
@@ -42,13 +46,28 @@ fn start() -> Result<std::convert::Infallible, device::Error> {
 
     loop {
         thread::sleep(Duration::from_secs(1));
+        let ms = |samples: usize| samples as f64 * 1000.0 / SAMPLE_RATE as f64;
+        let (cap_ms, play_ms) = (
+            capture.latency().as_secs_f64() * 1000.0,
+            playback.latency().as_secs_f64() * 1000.0,
+        );
+        let target = jitter_target.load(Relaxed);
+        // Same stages as the `latency` simulation, with the devices' measured
+        // latency and periods in place of the modelled 5 ms periods.
+        let estimate = cap_ms
+            + ms(FRAME_SAMPLES.saturating_sub(capture.period()))
+            + LOOKAHEAD_MS
+            + ms(target * FRAME_SAMPLES)
+            + ms(playback.period())
+            + play_ms;
         println!(
-            "period capture {} / playback {} samples, xruns capture {} / playback {}, jitter target {} frames",
+            "period capture {} / playback {} samples, device latency capture {cap_ms:.1} / playback {play_ms:.1} ms, \
+             xruns capture {} / playback {}, jitter target {target} frames, \
+             worst-case mouth-to-ear {estimate:.1} ms (budget {BUDGET_MS} ms)",
             capture.period(),
             playback.period(),
             capture.xruns(),
             playback.xruns(),
-            jitter_target.load(Relaxed),
         );
     }
 }
@@ -73,7 +92,9 @@ fn audio_thread(mut input: Input, mut output: Output, jitter_target: &AtomicUsiz
             while output.wants_frame() {
                 jitter.pop(&mut |p, f| decoder.decode(p, f), &mut decoded);
                 mixer.mix([(&decoded, 1.0)], &mut mixed);
-                output.push(&mixed);
+                if !output.push(&mixed) {
+                    break;
+                }
             }
             jitter_target.store(jitter.target(), Relaxed);
         });
