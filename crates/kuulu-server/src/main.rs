@@ -132,6 +132,21 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Ctrl+C (SIGINT), or on Unix also SIGTERM from `docker stop` or systemd.
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = signal(SignalKind::terminate())?;
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r,
+            _ = term.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
+}
+
 async fn run(command: Command) -> std::io::Result<()> {
     match command {
         Command::Run(dir) => {
@@ -147,7 +162,10 @@ async fn run(command: Command) -> std::io::Result<()> {
             }
             tokio::select! {
                 _ = server.run() => {}
-                _ = tokio::signal::ctrl_c() => server.close().await,
+                r = shutdown_signal() => {
+                    r?;
+                    server.close().await;
+                }
             }
         }
         Command::Invite {
