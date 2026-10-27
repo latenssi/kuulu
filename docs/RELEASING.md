@@ -113,8 +113,4 @@ environment) when they are added.
 
 ## Known limitations
 
-- **The repository is private.** GitHub release downloads need
-  authentication, so the update feeds return 404 to installed apps and
-  auto-update does not work until the repository is public. Testers must
-  download releases manually until then.
 - Linux updates only work for the AppImage.

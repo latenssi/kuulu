@@ -14,8 +14,6 @@ After=network-online.target
 
 [Service]
 ExecStart=/usr/local/bin/kuulu-server /var/lib/kuulu-server
-# Clean shutdown (closes connections, flushes the database) is on SIGINT.
-KillSignal=SIGINT
 Restart=on-failure
 RestartSec=5s
 

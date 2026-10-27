@@ -57,7 +57,7 @@ journalctl -u kuulu-server
 `sudo -u kuulu kuulu-server ... /var/lib/kuulu-server`.
 
 Without systemd: `kuulu-server [DIR]` runs the server with DIR (default: the
-current directory) as the data directory. Stop it with Ctrl+C (SIGINT).
+current directory) as the data directory. Stop it with Ctrl+C or SIGTERM.
 
 ## First start
 

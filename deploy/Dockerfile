@@ -46,9 +46,6 @@ COPY --from=build --chown=65532:65532 /data /data
 WORKDIR /data
 VOLUME /data
 EXPOSE 7700/udp
-# The server shuts down cleanly on SIGINT (closes connections, flushes the
-# database); it has no SIGTERM handler, and as PID 1 SIGTERM would be ignored.
-STOPSIGNAL SIGINT
 # The data directory defaults to the working directory, so
 # `docker exec <container> kuulu-server invite` needs no path.
 ENTRYPOINT ["/usr/local/bin/kuulu-server"]
