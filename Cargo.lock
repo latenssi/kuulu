@@ -509,6 +509,7 @@ dependencies = [
  "kuulu-client",
  "kuulu-proto",
  "opus",
+ "opusic-sys",
 ]
 
 [[package]]

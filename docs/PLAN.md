@@ -103,25 +103,31 @@ Kohinanpoisto lisää noin 10 ms, joten se on oletuksena pois päältä ja sen v
 
 **Pakettihäviöt:** Opuksen sisäinen FEC toimii vain SILK- ja hybriditilassa, ei low-delay-tilassa. Siksi oletuksena jokainen paketti kantaa myös edellisen kehyksen (redundanssi, noin 2 × 32 kbit/s). Vaihtoehto on VOIP-tila ja sisäinen FEC, joka lisää look-aheadia 4 ms. Valinta tehdään mittaamalla vaiheessa M3.
 
-**Mittaus M3 (`kuulu-bench fec-compare`) – EHDOTUS hallitukselle, ei vielä päätös.** 60 s synteettistä puhetta oikean kooderin ja jitter bufferin läpi simuloidulla kellolla, kaksi netem-hyppyä (puhuja → palvelin → kuulija), siemen 1. Prosentit ovat soitetuista kehyksistä. Laatu on aaltomuotoon perustuva välimittari: lähteeseen verrattuna se rankaisee SILKiä, joten häviön vahinko mitataan saman tilan häviöttömään (lan) ajoon samoilla kooderiasetuksilla.
+**Mittaus M3 (`kuulu-bench fec-compare`) – EHDOTUS hallitukselle, ei vielä päätös.** 60 s synteettistä puhetta oikean kooderin ja jitter bufferin läpi simuloidulla kellolla, kaksi netem-hyppyä (puhuja → palvelin → kuulija), siemen 1. FEC:tä ajetaan VOIP-tilassa 32 kbit/s:n tavoitteella, ja kooderin odotettu häviö (`packet_loss_perc`) käydään läpi. Paikatuksi lasketaan vain kehys, joka soitetaan redundanttisesta kopiosta tai oikeasta FEC-datasta (LBRR, tarkistettu `opus_packet_has_lbrr`-kutsulla). Prosentit ovat soitetuista kehyksistä. "Johdolla" lisää jokaiseen pakettiin 68 tavua (Kuulun otsake 12, IPv4 20, UDP 8, QUIC noin 28); IPv6 lisää 20 tavua. Laatu on aaltomuotoon perustuva välimittari: lähteeseen verrattuna se rankaisee SILKiä, joten häviön vahinko mitataan saman tilan häviöttömään (lan) ajoon samoilla kooderiasetuksilla.
 
-| Profiili | Tila | kbit/s | Look-ahead | Verkkohäviö | Paikattu | PLC | JB-tavoite | SNR lähteeseen | SNR häviöttömään | Huonot kehykset |
+| Profiili | Tila | Opus kbit/s | Johdolla kbit/s | Look-ahead | Paketteja, joissa FEC | Verkkohäviö | Paikattu | PLC | SNR häviöttömään | Huonot kehykset |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| lan | redundanssi | 66,1 | 2,5 ms | 0 % | 0 % | 0 % | 1,00 | 24,5 dB | – | – |
-| lan | VOIP + FEC | 29,6 | 6,5 ms | 0 % | 0 % | 0 % | 1,00 | 6,1 dB | – | – |
-| koti | redundanssi | 66,1 | 2,5 ms | 2,28 % | 1,90 % | 0,42 % | 1,07 | 24,2 dB | 39,5 dB | 0,27 % |
-| koti | VOIP + FEC | 32,5 | 6,5 ms | 2,28 % | 1,90 % | 0,42 % | 1,07 | 6,1 dB | 35,7 dB | 0,54 % |
-| huono mobiili | redundanssi | 66,1 | 2,5 ms | 10,45 % | 18,15 % | 18,17 % | 5,98 | 11,2 dB | 15,3 dB | 7,20 % |
-| huono mobiili | VOIP + FEC | 31,8 | 6,5 ms | 10,45 % | 18,15 % | 18,17 % | 5,98 | 5,0 dB | 13,7 dB | 6,86 % |
+| koti | redundanssi | 66,1 | 120,5 | 2,5 ms | 100 % | 2,28 % | 1,90 % | 0,42 % | 39,5 dB | 0,27 % |
+| koti | FEC, 2 % | 32,5 | 86,9 | 6,5 ms | 0 % | 2,28 % | 0 % | 2,32 % | 35,7 dB | 0,54 % |
+| koti | FEC, 5 % | 32,7 | 87,1 | 6,5 ms | 0 % | 2,28 % | 0 % | 2,32 % | 35,9 dB | 0,71 % |
+| koti | FEC, 6 % | 30,6 | 85,0 | 6,5 ms | 68 % | 2,28 % | 1,28 % | 1,03 % | 36,8 dB | 0,24 % |
+| koti | FEC, 10 % | 31,8 | 86,2 | 6,5 ms | 75 % | 2,28 % | 1,43 % | 0,88 % | 36,7 dB | 0,07 % |
+| koti | FEC, 20 % | 31,9 | 86,3 | 6,5 ms | 75 % | 2,28 % | 1,43 % | 0,88 % | 37,0 dB | 0,07 % |
+| huono mobiili | redundanssi | 66,1 | 120,5 | 2,5 ms | 100 % | 10,45 % | 18,15 % | 18,17 % | 15,3 dB | 7,20 % |
+| huono mobiili | FEC, 2 % | 32,5 | 86,9 | 6,5 ms | 0 % | 10,43 % | 0 % | 35,40 % | 9,7 dB | 13,18 % |
+| huono mobiili | FEC, 6 % | 30,6 | 85,0 | 6,5 ms | 68 % | 10,44 % | 12,09 % | 23,55 % | 13,8 dB | 7,47 % |
+| huono mobiili | FEC, 10 % | 31,8 | 86,2 | 6,5 ms | 75 % | 10,44 % | 13,36 % | 22,28 % | 13,9 dB | 6,53 % |
+| huono mobiili | FEC, 20 % | 31,9 | 86,3 | 6,5 ms | 75 % | 10,44 % | 13,36 % | 22,28 % | 14,3 dB | 6,31 % |
 
 Havainnot:
 
-- Molemmat paikkaavat saman määrän kehyksiä, koska kumpikin tarvitsee seuraavan paketin ennen kehyksen vuoroa. Kotiprofiililla tehollinen häviö laskee 2,3 %:sta 0,4 %:iin.
-- Redundanssi palauttaa kehyksen bitilleen samana. FEC:n paikkaama kehys on heikompilaatuinen (koti: 35,7 dB ja 0,54 % huonoja kehyksiä, redundanssilla 39,5 dB ja 0,27 %).
-- FEC:n hinta on 4 ms lisää look-aheadia: budjetti nousisi 43,5 ms:stä 47,5 ms:iin. Redundanssin hinta on kaksinkertainen bittinopeus (66 vs. noin 32 kbit/s).
-- Huonolla mobiiliyhteydellä kumpikaan ei auta: kaksi ±30 ms hyppyä tekee ±60 ms päästä päähän, mikä ylittää jitter bufferin 60 ms katon, ja noin 18 % kehyksistä myöhästyy.
+- **FEC ei toimi todellisella kotihäviöllä.** Kun kooderille kerrotaan todellinen päästä päähän -häviö (noin 2 %) tai 5 %, libopus ei lisää FEC-dataa lainkaan, ja FEC-tila on pelkkää PLC:tä (2,3 % kehyksistä paikataan PLC:llä, redundanssilla 0,4 %). FEC kytkeytyy päälle vasta asetuksella 6 %, ja silloinkin vain puhekehyksiin (68–75 % paketeista, ei taukoihin).
+- **Päälle kytkettynäkin FEC paikkaa vähemmän:** kotiprofiililla 1,4 % kehyksistä FEC:llä ja 0,9 % PLC:llä, redundanssilla 1,9 % ja 0,4 %. Redundanssin kopio on bitilleen sama kuin kadonnut kehys (39,5 dB häviöttömään verrattuna, FEC:llä noin 37 dB). Huonojen kehysten osuus on FEC 10 %:lla pienempi (0,07 % vs. 0,27 %), mutta ero on muutaman kehyksen luokkaa ja aaltomuotomittarin herkkä kohta; synteettisellä puheella sitä ei voi pitää ratkaisevana.
+- **Bittinopeus:** FEC ei lisää bittinopeutta, koska LBRR otetaan samasta 32 kbit/s:n budjetista (pääkehyksen laadun kustannuksella). Redundanssi kaksinkertaistaa Opus-datan (66 vs. noin 32 kbit/s), mutta johdolla ero on pienempi, 120 vs. 86 kbit/s (+40 %), koska otsakkeet maksavat 100 pakettia sekunnissa kummallakin noin 54 kbit/s.
+- **Latenssi:** FEC:n VOIP-tila lisää 4 ms look-aheadia: budjetti nousisi 43,5 ms:stä 47,5 ms:iin. Redundanssi ei muuta budjettia.
+- **Huono mobiiliyhteys:** kumpikaan ei riitä: kaksi ±30 ms hyppyä tekee ±60 ms päästä päähän, mikä ylittää jitter bufferin 60 ms katon, ja suuri osa kehyksistä myöhästyy. Redundanssi on silti selvästi parempi (PLC 18 % vs. 22 % FEC 10 %:lla).
 
-**Ehdotus:** pidetään redundanssi oletuksena. Se paikkaa yhtä usein, paikkaa paremmin eikä muuta latenssibudjettia; 66 kbit/s on pelaajan yhteydelle vähän. Rajoitukset: synteettinen puhe, aaltomuotomittari, yksi siemen.
+**Ehdotus:** pidetään redundanssi oletuksena. Se paikkaa enemmän, paikkaa bitilleen oikein eikä muuta latenssibudjettia. Sen hinta on noin 34 kbit/s enemmän liikennettä johdolla, mikä on pelaajan yhteydelle vähän. FEC olisi järkevä vain, jos kaistasta tulee pullonkaula; silloin se vaatisi 4 ms lisää budjettiin ja kooderin odotetuksi häviöksi vähintään 6 %. Rajoitukset: synteettinen puhe, aaltomuotomittari, yksi siemen.
 
 **Reaaliaikasäännöt äänisäikeessä ja callbackeissa:** ei muistinvarausta, ei lukkoja, ei I/O:ta eikä lokitusta. Säikeiden välinen data kulkee vain lukottomilla rengaspuskureilla. Säännön noudattaminen varmistetaan testeissä (assert\_no\_alloc).
 
