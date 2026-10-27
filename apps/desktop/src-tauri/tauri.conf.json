@@ -18,13 +18,14 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost",
+      "devCsp": null
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -35,6 +36,7 @@
   },
   "plugins": {
     "updater": {
+      "requireSignedVersion": true,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM1N0JERTY5REQwQTg1NTYKUldSV2hRcmRhZDU3eGJnWjF0QjlWZmJFUmZadXdyQkdYWXlzMFpsQk1pZjhObGU3ZFVCTGpIMHUK"
     }
   }
