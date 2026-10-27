@@ -18,6 +18,8 @@ message ClientMessage {
     MoveMember move_member = 7;
     Kick kick = 8;
     Ban ban = 9;
+    // Answered with the new invite's token in Response.invite.
+    CreateInvite create_invite = 10;
   }
   uint32 request_id = 15;
 }
@@ -51,7 +53,9 @@ message Hello {
   repeated string features = 4;
   // Ed25519 identity public key (32 bytes). The server identifies users by it.
   bytes public_key = 5;
-  // Invite token; not checked until invites exist (M5).
+  // Invite token from the invite link. Required only for a public key the
+  // server does not know; a known key's token is ignored unless it is the
+  // bootstrap admin invite.
   string invite = 6;
   // Freely chosen name shown to others; may be empty.
   string display_name = 7;
@@ -90,6 +94,9 @@ message Member {
   bool self_mute = 4;
   // This member receives no voice.
   bool self_deaf = 5;
+  // The member's key has the admin role. A change at runtime arrives as
+  // member_updated.
+  bool admin = 6;
 }
 
 message MemberLeft {
@@ -143,6 +150,12 @@ message Ban {
   uint32 session_id = 1;
 }
 
+// A new invite link token. Both fields must be positive.
+message CreateInvite {
+  uint32 uses = 1;
+  uint32 expires_in_secs = 2;
+}
+
 message Response {
   enum Status {
     OK = 0;
@@ -155,6 +168,9 @@ message Response {
   }
   uint32 request_id = 1;
   Status status = 2;
+  // Token of the invite that CreateInvite made; the client builds the link
+  // from the address and fingerprint it connected with.
+  string invite = 3;
 }
 
 message Reject {
@@ -164,6 +180,8 @@ message Reject {
     TOO_OLD = 1;
     // The client's oldest protocol version is newer than the server supports.
     TOO_NEW = 2;
+    // A public key the server does not know came without a valid invite:
+    // missing, unknown, expired, used up or revoked.
     INVITE_EXPIRED = 3;
     BANNED = 4;
     // Missing or malformed public key, or identity_proof does not verify.

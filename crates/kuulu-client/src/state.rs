@@ -29,6 +29,8 @@ pub struct Member {
     pub self_mute: bool,
     /// This member hears nothing.
     pub self_deaf: bool,
+    /// Has the admin role; can change at runtime (an `Event::MemberUpdated`).
+    pub admin: bool,
 }
 
 /// A change to [`ServerState`], already applied when it is delivered.
@@ -126,6 +128,7 @@ impl From<control::Member> for Member {
             channel_id: m.channel_id,
             self_mute: m.self_mute,
             self_deaf: m.self_deaf,
+            admin: m.admin,
         }
     }
 }

@@ -22,7 +22,8 @@ const STABLE_SESSION: Duration = Duration::from_secs(10);
 /// Events buffered per subscriber before it lags.
 const EVENT_CAPACITY: usize = 256;
 
-pub(crate) type PendingRequest = (Request, oneshot::Sender<Result<(), RequestError>>);
+/// Answered with the response's invite token, empty for other requests.
+pub(crate) type PendingRequest = (Request, oneshot::Sender<Result<String, RequestError>>);
 
 /// The voice path's view of the connection.
 #[derive(Clone)]
@@ -290,7 +291,7 @@ impl Session {
                 msg = incoming.recv() => match msg.map(|m| m.msg) {
                     Some(Some(server_message::Msg::Response(r))) => {
                         if let Some(reply) = pending.remove(&r.request_id) {
-                            let _ = reply.send(response(r.status));
+                            let _ = reply.send(response(r.status).map(|()| r.invite));
                         }
                     }
                     Some(Some(msg)) => {
