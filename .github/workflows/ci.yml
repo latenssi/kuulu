@@ -71,7 +71,7 @@ jobs:
 
   # Each fuzz target for a minute. Too slow for every PR: main and weekly.
   fuzz:
-    if: true # TEMP: verify on the PR
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
