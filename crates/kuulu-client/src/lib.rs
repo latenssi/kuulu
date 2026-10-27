@@ -3,9 +3,11 @@
 //! [`Client`] only moves packets. The audio pipeline hands it encoded frames
 //! with [`Client::send`] and takes received ones from [`Client::recv`]; the
 //! connection is re-established behind that interface when it drops.
+//! [`voice::Voice`] connects it to the audio pipeline.
 
 pub mod netem;
 mod tls;
+pub mod voice;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use kuulu_proto::control::{

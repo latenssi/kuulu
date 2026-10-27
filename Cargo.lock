@@ -512,11 +512,14 @@ dependencies = [
 name = "kuulu-client"
 version = "0.0.0"
 dependencies = [
+ "assert_no_alloc",
  "bytes",
+ "kuulu-audio",
  "kuulu-proto",
  "kuulu-server",
  "quinn",
  "rand",
+ "rtrb",
  "tokio",
 ]
 
