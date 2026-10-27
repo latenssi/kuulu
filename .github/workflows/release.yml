@@ -1,10 +1,12 @@
 # Release pipeline, see docs/RELEASING.md.
 #
-# - Tag vX.Y.Z or vX.Y.Z-beta.N: build all platforms, sign updater artifacts
-#   and upload them with latest.json to a draft GitHub release.
+# - Tag vX.Y.Z or vX.Y.Z-beta.N: build all platforms without the updater key,
+#   then a separate job in the `release` environment signs the updater
+#   artifacts with the locked Tauri CLI, writes latest.json and uploads
+#   everything to a draft GitHub release.
 # - Publishing that draft: copy its latest.json to the rolling `beta-channel`
-#   release, which beta builds poll for updates.
-# - Manual run (workflow_dispatch): build only, nothing is uploaded.
+#   release if it is newer than what is there. Beta users poll that feed.
+# - Manual run (workflow_dispatch): build only; no key, nothing uploaded.
 name: Release
 
 on:
@@ -17,34 +19,14 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  create-release:
-    if: github.ref_type == 'tag' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    outputs:
-      id: ${{ steps.release.outputs.id }}
-    steps:
-      - id: release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          prerelease=false
-          [[ "$TAG" == *-beta.* ]] && prerelease=true
-          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
-            -f tag_name="$TAG" -f name="Kuulu ${TAG#v}" \
-            -F draft=true -F prerelease=$prerelease -F generate_release_notes=true \
-            --jq .id)
-          echo "id=$id" >> "$GITHUB_OUTPUT"
-
   build:
-    needs: create-release
-    if: ${{ !failure() && !cancelled() && github.event_name != 'release' }}
+    if: github.event_name != 'release'
     strategy:
       fail-fast: false
       matrix:
@@ -57,27 +39,27 @@ jobs:
           - os: windows-latest
             args: --bundles nsis
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: lts/*
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-      - uses: Swatinem/rust-cache@v2
       - run: npm ci
         working-directory: apps/desktop
       # The git tag is the single source of the release version.
       - if: github.ref_type == 'tag'
         working-directory: apps/desktop
-        shell: bash
         run: npm pkg set version="${GITHUB_REF_NAME#v}"
 
       # OS-level code signing is optional until certificates exist.
@@ -95,9 +77,10 @@ jobs:
             echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
             exit 0
           fi
+          delim="EOF_$(openssl rand -hex 16)"
           for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
                    APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            echo "$v=${!v}" >> "$GITHUB_ENV"
+            printf '%s<<%s\n%s\n%s\n' "$v" "$delim" "${!v}" "$delim" >> "$GITHUB_ENV"
           done
       - name: Windows Authenticode (only if a certificate secret is set)
         id: wincert
@@ -121,32 +104,122 @@ jobs:
           } } } | ConvertTo-Json -Depth 5 | Set-Content $conf
           "args=--config $conf" >> $env:GITHUB_OUTPUT
 
-      # Without releaseId/tagName (manual runs) tauri-action only builds.
-      - uses: tauri-apps/tauri-action@v1
+      # No updater key here: build scripts and npm packages never see it.
+      - name: Build
+        working-directory: apps/desktop
+        run: npm run tauri -- build ${{ matrix.args }} ${{ steps.wincert.outputs.args }}
+      # Collect the installers; the AppImage, the .app.tar.gz and the NSIS
+      # setup.exe double as updater artifacts.
+      - name: Collect bundles
+        run: |
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          mkdir out
+          case "$RUNNER_OS" in
+            Linux) cp target/release/bundle/appimage/*.AppImage out/ ;;
+            macOS)
+              bundle=target/universal-apple-darwin/release/bundle
+              cp "$bundle"/dmg/*.dmg out/
+              COPYFILE_DISABLE=1 tar -czf "out/Kuulu_${version}_universal.app.tar.gz" \
+                -C "$bundle/macos" Kuulu.app ;;
+            Windows) cp target/release/bundle/nsis/*-setup.exe out/ ;;
+          esac
+          ls -l out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bundle-${{ runner.os }}
+          path: out/
+          if-no-files-found: error
+
+  # Holds the updater key. Runs only the locked Tauri CLI, jq and gh.
+  sign:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: lts/*
+      - run: npm ci --ignore-scripts
+        working-directory: apps/desktop
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+          path: out
+      - name: Sign updater artifacts and write latest.json
         env:
-          GITHUB_TOKEN: ${{ github.token }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          projectPath: apps/desktop
-          releaseId: ${{ needs.create-release.outputs.id }}
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseDraft: true
-          args: ${{ matrix.args }} ${{ steps.wincert.outputs.args }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          tauri=apps/desktop/node_modules/.bin/tauri
+          cd out
+          linux=$(ls *.AppImage) mac=$(ls *.app.tar.gz) win=$(ls *-setup.exe)
+          for f in "$linux" "$mac" "$win"; do
+            # --app-version binds the version for requireSignedVersion.
+            "../$tauri" signer sign --app-version "$version" "$f"
+          done
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          entry() { jq -n --arg url "$base/$1" --rawfile sig "$1.sig" '{url: $url, signature: $sig}'; }
+          jq -n --arg version "$version" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson linux "$(entry "$linux")" --argjson mac "$(entry "$mac")" \
+            --argjson win "$(entry "$win")" \
+            '{version: $version, pub_date: $date, platforms: {
+              "linux-x86_64": $linux, "darwin-x86_64": $mac,
+              "darwin-aarch64": $mac, "windows-x86_64": $win}}' > latest.json
+          cat latest.json
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=()
+          [[ "$TAG" == *-beta.* ]] && prerelease=(--prerelease)
+          gh release create "$TAG" --draft --verify-tag "${prerelease[@]}" \
+            --title "Kuulu ${TAG#v}" --generate-notes out/*
 
   beta-channel:
-    if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v')
+    # Only releases this workflow drafted (author: github-actions[bot]).
+    if: >-
+      github.event_name == 'release'
+      && startsWith(github.event.release.tag_name, 'v')
+      && github.event.release.author.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
+    concurrency: beta-channel
+    permissions:
+      contents: write
     steps:
       - env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.event.release.tag_name }}
         run: |
-          gh release download "$TAG" --pattern latest.json
+          gh release download "$TAG" --pattern latest.json --dir new
           if ! gh release view beta-channel > /dev/null 2>&1; then
             gh release create beta-channel --prerelease --target main \
               --title "Beta update channel" \
               --notes "Updater feed for beta builds (see docs/RELEASING.md). Do not delete."
           fi
-          gh release upload beta-channel latest.json --clobber
+          if gh release download beta-channel --pattern latest.json --dir current; then
+            new=$(jq -r .version new/latest.json) current=$(jq -r .version current/latest.json)
+            # Semver order for our tag forms X.Y.Z and X.Y.Z-beta.N.
+            if ! node -e '
+              const key = v => {
+                const m = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/.exec(v);
+                if (!m) throw new Error(`unexpected version ${v}`);
+                return [+m[1], +m[2], +m[3], m[4] === undefined ? Infinity : +m[4]];
+              };
+              const [a, b] = process.argv.slice(1).map(key);
+              const i = a.findIndex((x, j) => x !== b[j]);
+              process.exit(i >= 0 && a[i] > b[i] ? 0 : 1);
+            ' "$new" "$current"; then
+              echo "beta-channel already has $current, not replacing with $new"
+              exit 0
+            fi
+          fi
+          gh release upload beta-channel new/latest.json --clobber
