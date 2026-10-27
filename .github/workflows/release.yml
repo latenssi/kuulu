@@ -49,7 +49,11 @@ jobs:
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev libx11-dev libxtst-dev patchelf
+          sudo apt-get install -y libasound2-dev libwebkit2gtk-4.1-dev librsvg2-dev libx11-dev libxtst-dev patchelf
+      # prost-build needs protoc.
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2
+        with:
+          tool: protoc
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: lts/*
