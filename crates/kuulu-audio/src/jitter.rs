@@ -28,7 +28,7 @@ const SILENCE_PEAK: f32 = 0.003;
 /// Consecutive missing frames after which the sender is treated as stopped
 /// and the next packet restarts the stream. Equals the largest jitter the
 /// buffer absorbs, so anything missing longer is lost rather than late.
-const STOP_AFTER_MISSING: u32 = MAX_TARGET as u32;
+pub const STOP_AFTER_MISSING: u32 = MAX_TARGET as u32;
 
 struct Slot {
     filled: bool,
