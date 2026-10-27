@@ -7,14 +7,16 @@
 //! Delay policy: playback starts as soon as `target` frames are buffered
 //! (target 1 = play a frame on the first tick after it arrives). A late
 //! packet (one whose frame was already concealed) raises the target by one
-//! frame immediately and holds playback back one frame. Every 2 s without a
-//! late packet the target drops by one; if the buffer stayed deeper than the
-//! target for that whole window, one silent frame is dropped. The same
+//! frame immediately and holds playback back one frame. Other old packets
+//! (duplicates, redundant copies, leftovers) are ignored. Every 2 s without
+//! a late packet the target drops by one; if the buffer stayed deeper than
+//! the target for that whole window, one silent frame is dropped. The same
 //! mechanism absorbs clock drift between sender and receiver devices.
 
 use crate::{Frame, MAX_PAYLOAD};
 
 /// Power of two, so `seq % CAPACITY` stays continuous across wraparound.
+/// Above MAX_TARGET so a burst slightly deeper than the target still fits.
 const CAPACITY: usize = 8;
 const MAX_TARGET: usize = 6;
 /// Pops per adaptation window (2 s of 10 ms frames).
@@ -45,6 +47,9 @@ pub struct JitterBuffer {
     target: usize,
     /// Concealed frames still to insert ahead of `next` to grow the delay.
     stretch: usize,
+    /// Bit i set: seq `next - 1 - i` was concealed because it was missing.
+    /// 16 bits cover more than MAX_TARGET frames of lateness.
+    concealed: u16,
     missing: u32,
     window_pops: u32,
     window_late: bool,
@@ -67,6 +72,7 @@ impl JitterBuffer {
             newest: 0,
             target: 1,
             stretch: 0,
+            concealed: 0,
             missing: 0,
             window_pops: 0,
             window_late: false,
@@ -85,16 +91,15 @@ impl JitterBuffer {
         if self.playing {
             let ahead = seq.wrapping_sub(self.next) as i16;
             if ahead < 0 {
-                self.window_late = true;
-                if self.target < MAX_TARGET {
-                    self.target += 1;
-                    self.stretch += 1;
+                let bit = 1u16.checked_shl((-ahead - 1) as u32).unwrap_or(0);
+                if self.concealed & bit != 0 {
+                    self.concealed &= !bit;
+                    self.grow();
                 }
                 return;
             }
             if ahead as usize >= CAPACITY {
-                // Far ahead of playback: everything buffered is stale.
-                self.restart();
+                self.skip_to(seq);
             }
         }
         if !self.received || seq.wrapping_sub(self.newest) as i16 > 0 {
@@ -134,7 +139,7 @@ impl JitterBuffer {
             }
         } else {
             self.missing += 1;
-            if self.missing >= STOP_AFTER_MISSING {
+            if self.missing >= STOP_AFTER_MISSING && self.depth() == 0 {
                 self.restart();
                 return;
             }
@@ -162,6 +167,7 @@ impl JitterBuffer {
         out: &mut Frame,
     ) -> bool {
         let present = self.has(self.next);
+        self.concealed = self.concealed << 1 | u16::from(!present);
         let slot = &mut self.slots[self.next as usize % CAPACITY];
         // Clearing every visited slot also evicts stale packets skipped at
         // start before their slot index comes round again.
@@ -179,6 +185,29 @@ impl JitterBuffer {
     /// Frames from `next` through the newest received one, gaps included.
     fn depth(&self) -> usize {
         (self.newest.wrapping_sub(self.next) as i16 + 1).max(0) as usize
+    }
+
+    fn grow(&mut self) {
+        self.window_late = true;
+        // Dropping a frame now would undo the growth.
+        self.drop_silent = false;
+        if self.target < MAX_TARGET {
+            self.target += 1;
+            self.stretch += 1;
+        }
+    }
+
+    /// Jumps playback forward so `seq` is `target` frames ahead: the frames
+    /// overtaken are stale. Called when `seq` would not fit in the slots.
+    fn skip_to(&mut self, seq: u16) {
+        self.next = seq.wrapping_sub(self.target as u16 - 1);
+        self.concealed = 0;
+        let next = self.next;
+        for slot in &mut self.slots {
+            if (slot.seq.wrapping_sub(next) as i16) < 0 {
+                slot.filled = false;
+            }
+        }
     }
 
     /// Forgets the current stream but keeps the learned target.
@@ -306,6 +335,13 @@ mod tests {
     /// Grows to target 2, then streams steadily for `windows` adaptation
     /// windows. Returns the target and how many frames playback lags.
     fn after_growth(loudness: u8, windows: u32) -> (usize, u16) {
+        let (h, seq) = grown(loudness, windows);
+        let last = h.played.last().unwrap().unwrap();
+        (h.jb.target(), seq - 1 - last)
+    }
+
+    /// See [`after_growth`]; also returns the next seq to send.
+    fn grown(loudness: u8, windows: u32) -> (Harness, u16) {
         let mut h = Harness::new();
         h.tick(0, loudness);
         h.pop();
@@ -315,8 +351,65 @@ mod tests {
             h.tick(seq, loudness);
             seq += 1;
         }
-        let last = h.played.last().unwrap().unwrap();
-        (h.jb.target(), seq - 1 - last)
+        (h, seq)
+    }
+
+    #[test]
+    fn growth_cancels_pending_drop() {
+        let (mut h, seq) = grown(LOUD, 2);
+        assert!(h.jb.drop_silent);
+        h.pop();
+        h.pop(); // `seq` concealed
+        h.push(seq, QUIET);
+        assert_eq!(h.jb.target(), 2);
+        assert!(!h.jb.drop_silent);
+    }
+
+    #[test]
+    fn duplicates_and_redundant_copies_do_not_grow() {
+        let mut h = Harness::new();
+        for seq in 0..50 {
+            h.push(seq, LOUD);
+            h.push(seq.wrapping_sub(1), LOUD); // redundancy: previous frame again
+            h.pop();
+            h.push(seq, LOUD); // duplicate after playing
+        }
+        assert_eq!(h.jb.target(), 1);
+        assert!(h.played.iter().skip(1).all(|p| p.is_some()));
+    }
+
+    #[test]
+    fn late_packet_grows_only_once() {
+        let mut h = Harness::new();
+        h.tick(0, LOUD);
+        h.pop();
+        h.push(1, LOUD);
+        h.push(1, LOUD);
+        assert_eq!(h.jb.target(), 2);
+    }
+
+    #[test]
+    fn long_gap_keeps_newer_buffered_packets() {
+        let mut h = Harness::new();
+        h.tick(0, LOUD);
+        h.push(7, LOUD);
+        for _ in 0..7 {
+            h.pop();
+        }
+        assert_eq!(h.played.len(), 8);
+        assert_eq!(h.played.last(), Some(&Some(7)));
+    }
+
+    #[test]
+    fn burst_skips_ahead_to_newest() {
+        let mut h = Harness::new();
+        h.tick(0, LOUD);
+        for seq in 1..=10 {
+            h.push(seq, LOUD);
+        }
+        h.pop();
+        h.pop();
+        assert_eq!(h.played, [Some(0), Some(9), Some(10)]);
     }
 
     #[test]
@@ -334,17 +427,22 @@ mod tests {
     fn seq_wraps_around() {
         let mut h = Harness::new();
         let start = u16::MAX - 4;
-        for i in 0..10 {
+        for i in 0..5 {
             h.tick(start.wrapping_add(i), LOUD);
         }
-        let expected: Vec<_> = (0..10).map(|i| Some(start.wrapping_add(i))).collect();
-        assert_eq!(h.played, expected);
-        h.push(start.wrapping_add(8), LOUD); // late across the wrap
+        h.pop(); // seq 0 concealed
+        h.tick(1, LOUD);
+        h.push(u16::MAX, LOUD); // duplicate across the wrap: ignored
+        assert_eq!(h.jb.target(), 1);
+        h.push(0, LOUD); // late across the wrap
         assert_eq!(h.jb.target(), 2);
+        let mut expected: Vec<_> = (0..5).map(|i| Some(start.wrapping_add(i))).collect();
+        expected.extend([None, Some(1)]);
+        assert_eq!(h.played, expected);
     }
 
     #[test]
-    fn jump_far_ahead_restarts_stream() {
+    fn jump_far_ahead_skips_to_it() {
         let mut h = Harness::new();
         h.tick(0, LOUD);
         h.tick(1000, LOUD);
