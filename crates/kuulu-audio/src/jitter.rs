@@ -164,7 +164,7 @@ impl JitterBuffer {
         let present = self.has(self.next);
         let slot = &mut self.slots[self.next as usize % CAPACITY];
         // Clearing every visited slot also evicts stale packets skipped at
-        // start or restart before their slot index comes round again.
+        // start before their slot index comes round again.
         slot.filled = false;
         decode(present.then(|| &slot.payload[..slot.len]), out);
         self.next = self.next.wrapping_add(1);
