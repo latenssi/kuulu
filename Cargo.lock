@@ -292,6 +292,10 @@ dependencies = [
 [[package]]
 name = "kuulu-bench"
 version = "0.0.0"
+dependencies = [
+ "assert_no_alloc",
+ "kuulu-audio",
+]
 
 [[package]]
 name = "kuulu-client"
