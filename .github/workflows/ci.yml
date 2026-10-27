@@ -22,6 +22,10 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # prost-build needs protoc.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: protoc
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
