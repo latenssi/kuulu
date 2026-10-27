@@ -6,12 +6,10 @@
 use crate::audio::{Audio, Gate};
 use crate::invite::Invite;
 use crate::latency::{self, Latency};
-use crate::settings::{Settings, Store, TalkMode};
+use crate::settings::{DEFAULT_VOLUME, Settings, Store, TalkMode};
 use crate::{identity, ptt};
 use kuulu_client::{Client, Event, IdentityKey, Request, ServerState};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -23,10 +21,6 @@ const STATS_INTERVAL: Duration = Duration::from_secs(1);
 /// Invites made from the client, as in the plan's CLI example.
 const INVITE_USES: u32 = 10;
 const INVITE_EXPIRES: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-
-/// Per-sender volume, percent.
-const DEFAULT_VOLUME: u8 = 100;
-pub const MAX_VOLUME: u8 = 200;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -67,8 +61,12 @@ impl Phase {
         Phase::failed(capitalize(&format!("{e}.")), !e.is_fatal())
     }
 
-    fn in_call(&self) -> bool {
-        matches!(self, Phase::Connected | Phase::Reconnecting)
+    /// A call is active or starting: no update may install now.
+    fn blocks_update(&self) -> bool {
+        matches!(
+            self,
+            Phase::Connecting | Phase::Connected | Phase::Reconnecting
+        )
     }
 }
 
@@ -125,7 +123,8 @@ pub struct MemberView {
 pub struct TalkView {
     /// What the user chose.
     pub mode: TalkMode,
-    pub shortcut: String,
+    /// The push-to-talk input, named as in `ptt`.
+    pub key: String,
     /// Push-to-talk was chosen but cannot work; voice activity is used.
     pub fallback_reason: Option<String>,
 }
@@ -173,10 +172,7 @@ fn is_admin(state: &ServerState) -> bool {
 struct Local {
     muted: bool,
     deafened: bool,
-    /// Percent by session id, for this call only: members have no
-    /// identity that outlives their session yet.
-    volumes: HashMap<u32, u8>,
-    /// Why push-to-talk is unavailable, from the last registration.
+    /// Why push-to-talk is unavailable, from the last attempt to start it.
     ptt_unavailable: Option<String>,
     audio_error: Option<String>,
 }
@@ -193,7 +189,7 @@ fn snapshot(
 ) -> Snapshot {
     let talk = TalkView {
         mode: settings.talk_mode,
-        shortcut: settings.ptt_shortcut.clone(),
+        key: settings.ptt_key.clone(),
         fallback_reason: match settings.talk_mode {
             TalkMode::PushToTalk => local.ptt_unavailable.clone(),
             TalkMode::VoiceActivity => None,
@@ -222,7 +218,7 @@ fn snapshot(
                                 speaking: mine && transmitting && !silenced,
                                 volume: match mine {
                                     true => DEFAULT_VOLUME,
-                                    false => volume(local, m.session_id),
+                                    false => settings.volume(&m.public_key),
                                 },
                             }
                         })
@@ -255,14 +251,6 @@ fn snapshot(
     }
 }
 
-fn volume(local: &Local, session_id: u32) -> u8 {
-    local
-        .volumes
-        .get(&session_id)
-        .copied()
-        .unwrap_or(DEFAULT_VOLUME)
-}
-
 struct Call {
     client: Arc<Client>,
     invite: Invite,
@@ -275,6 +263,11 @@ impl Drop for Call {
     }
 }
 
+/// What a reset takes out of [`Inner`]; dropping it closes the connection
+/// and stops audio (joining the audio thread), so it is dropped only after
+/// the lock is released.
+type Teardown = (Option<Call>, Option<Audio>);
+
 #[derive(Default)]
 struct Inner {
     phase: Phase,
@@ -284,20 +277,36 @@ struct Inner {
     local: Local,
     /// Loaded from the keyring on first join.
     identity: Option<IdentityKey>,
-    /// Bumped by every join and leave, so a join that finishes after the
-    /// user gave up is discarded.
+    /// Bumped by every join and leave. Work done outside the lock installs
+    /// its result only if this is unchanged, so a stale result is dropped.
     attempt: u64,
     /// A deep link that arrived before the UI asked for it.
     pending_invite: Option<String>,
+    /// The updater is installing; joins are refused.
+    installing: bool,
+}
+
+impl Inner {
+    /// Starts a new attempt from a clean slate; see [`Teardown`].
+    fn reset(&mut self, phase: Phase) -> (u64, Teardown) {
+        self.attempt += 1;
+        self.phase = phase;
+        self.local = Local::default();
+        (self.attempt, (self.call.take(), self.audio.take()))
+    }
 }
 
 /// Tauri-managed state; commands call it, the watcher task updates it.
+///
+/// Lock discipline: `inner` is held only for quick reads and writes, never
+/// across an await, disk I/O, starting or stopping audio, or changing the
+/// push-to-talk hook (all of which can block, some on the main thread,
+/// which sync commands also use). Such work takes what it needs, releases
+/// the lock, works, and installs its result only if `attempt` is unchanged.
 pub struct Session {
     app: AppHandle,
     gate: Arc<Gate>,
     inner: Mutex<Inner>,
-    /// Mirrors `phase.in_call()` for the updater, without the lock.
-    in_call: AtomicBool,
 }
 
 impl Session {
@@ -306,13 +315,7 @@ impl Session {
             app,
             gate: Arc::default(),
             inner: Mutex::default(),
-            in_call: AtomicBool::new(false),
         }
-    }
-
-    /// True while connected or reconnecting.
-    pub fn in_call(&self) -> bool {
-        self.in_call.load(Relaxed)
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -323,7 +326,22 @@ impl Session {
         self.app.state::<Store>().get()
     }
 
+    /// For the updater: true, and joins are refused from now on, unless a
+    /// call is active or starting. Checking and setting under one lock
+    /// leaves no window for a join to slip in.
+    pub fn try_begin_install(&self) -> bool {
+        let mut inner = self.lock();
+        inner.installing = !inner.phase.blocks_update();
+        inner.installing
+    }
+
+    /// The install failed; joins are allowed again.
+    pub fn install_failed(&self) {
+        self.lock().installing = false;
+    }
+
     pub fn snapshot(&self) -> Snapshot {
+        let settings = self.settings();
         let inner = self.lock();
         let call = inner.call.as_ref();
         let state = call.map(|c| c.client.state());
@@ -333,7 +351,7 @@ impl Session {
             &inner.phase,
             server,
             &inner.local,
-            &self.settings(),
+            &settings,
             call.and_then(|c| c.client.rtt()),
             audio.and_then(Audio::jitter_target),
             audio.is_some_and(Audio::transmitting),
@@ -342,11 +360,6 @@ impl Session {
 
     fn emit(&self) {
         let _ = self.app.emit("session", self.snapshot());
-    }
-
-    fn set_phase(&self, inner: &mut Inner, phase: Phase) {
-        self.in_call.store(phase.in_call(), Relaxed);
-        inner.phase = phase;
     }
 
     /// Remembers a deep-linked invite and tells the UI.
@@ -364,50 +377,61 @@ impl Session {
     /// server. Settings must already hold the user's choices.
     pub async fn join(&self, link: &str, name: &str) -> Result<(), String> {
         let invite = Invite::parse(link)?;
-        let attempt = {
+        let (attempt, old) = {
             let mut inner = self.lock();
-            inner.call = None;
-            inner.audio = None;
-            inner.local = Local::default();
-            inner.attempt += 1;
-            self.set_phase(&mut inner, Phase::Connecting);
-            inner.attempt
+            if inner.installing {
+                return Err("Kuulu is installing an update and restarts in a moment.".into());
+            }
+            inner.reset(Phase::Connecting)
         };
+        drop(old);
+        ptt::stop();
         self.emit();
-        let result = self.connect(&invite, name).await;
-        let mut inner = self.lock();
-        if inner.attempt != attempt {
-            return Ok(()); // Left or joined elsewhere meanwhile.
-        }
-        let client = match result {
+
+        let client = match self.connect(&invite, name).await {
             Ok(client) => Arc::new(client),
             Err(failed) => {
                 let reason = match &failed {
                     Phase::Failed { reason, .. } => reason.clone(),
                     _ => unreachable!("connect fails with Phase::Failed"),
                 };
-                self.set_phase(&mut inner, failed);
-                // Keep the link at hand for trying again.
-                inner.pending_invite = Some(link.trim().into());
-                drop(inner);
-                let _ = self.app.emit("invite", link.trim());
-                self.emit();
+                let mut inner = self.lock();
+                if inner.attempt == attempt {
+                    inner.phase = failed;
+                    // Keep the link at hand for trying again.
+                    inner.pending_invite = Some(link.trim().into());
+                    drop(inner);
+                    let _ = self.app.emit("invite", link.trim());
+                    self.emit();
+                }
                 return Err(reason);
             }
         };
-        let watcher = tokio::spawn(watch(self.app.clone(), client.clone()));
-        inner.call = Some(Call {
-            client,
-            invite,
-            watcher: watcher.abort_handle(),
-        });
-        self.set_phase(&mut inner, Phase::Connected);
+        {
+            let mut inner = self.lock();
+            if inner.attempt != attempt {
+                return Ok(()); // Left or joined elsewhere meanwhile.
+            }
+            let watcher = tokio::spawn(watch(self.app.clone(), client.clone(), attempt));
+            inner.call = Some(Call {
+                client,
+                invite: invite.clone(),
+                watcher: watcher.abort_handle(),
+            });
+            inner.phase = Phase::Connected;
+        }
         self.app.state::<Store>().update(|s| {
             s.display_name = name.into();
-            s.last_server = Some(link.trim().into());
+            // The key is known now: rejoining needs no invite.
+            s.last_server = Some(
+                Invite {
+                    token: None,
+                    ..invite
+                }
+                .link(),
+            );
         });
-        self.restart_audio(&mut inner);
-        drop(inner);
+        self.restart_audio();
         self.emit();
         Ok(())
     }
@@ -426,86 +450,112 @@ impl Session {
         };
         self.lock().identity = Some(key.clone());
         let addr = invite.resolve().await.map_err(|e| Phase::failed(e, true))?;
-        Client::connect_as(addr, &invite.fingerprint, &key, name, Some(&invite.token))
+        let token = invite.token.as_deref();
+        Client::connect_as(addr, &invite.fingerprint, &key, name, token)
             .await
             .map_err(|e| Phase::client_failed(&e))
     }
 
     pub fn leave(&self) {
-        let mut inner = self.lock();
-        inner.attempt += 1;
-        inner.call = None;
-        inner.audio = None;
-        inner.local = Local::default();
-        self.set_phase(&mut inner, Phase::Idle);
-        drop(inner);
-        ptt::unregister(&self.app);
+        let (_, old) = self.lock().reset(Phase::Idle);
+        drop(old);
+        ptt::stop();
         self.app.state::<Store>().update(|s| s.last_server = None);
         self.emit();
     }
 
-    /// (Re)starts audio for the current call, or stops it, from the current
-    /// settings, and (re)registers the push-to-talk key.
-    fn restart_audio(&self, inner: &mut Inner) {
-        let settings = self.settings();
-        inner.audio = None; // Release the devices first.
-        let client = inner.call.as_ref().map(|c| c.client.clone());
-        if client.is_none() {
-            return;
-        }
-        let ptt = match settings.talk_mode {
-            TalkMode::PushToTalk => {
-                ptt::register(&self.app, &settings.ptt_shortcut, self.gate.clone()).err()
-            }
+    /// Starts or stops the push-to-talk hook for the current settings.
+    /// Returns why push-to-talk is unavailable, if it is.
+    fn apply_talk_mode(&self, settings: &Settings) -> Option<String> {
+        let unavailable = match settings.talk_mode {
+            TalkMode::PushToTalk => ptt::start(&settings.ptt_key, self.gate.clone()).err(),
             TalkMode::VoiceActivity => {
-                ptt::unregister(&self.app);
+                ptt::stop();
                 None
             }
         };
         self.gate
-            .set_push_to_talk(settings.talk_mode == TalkMode::PushToTalk && ptt.is_none());
-        inner.local.ptt_unavailable = ptt;
-        match Audio::start(
-            settings.input_device.as_deref(),
-            settings.output_device.as_deref(),
-            self.gate.clone(),
-            client,
-        ) {
-            Ok(audio) => {
-                inner.audio = Some(audio);
-                inner.local.audio_error = None;
-            }
-            Err(e) => inner.local.audio_error = Some(e),
-        }
+            .set_push_to_talk(settings.talk_mode == TalkMode::PushToTalk && unavailable.is_none());
+        unavailable
     }
 
-    /// Applies changed settings to a running call.
-    pub fn settings_changed(&self) {
+    /// (Re)starts the call's push-to-talk and, with `devices`, its audio,
+    /// from the current settings. Must run inside the tokio runtime.
+    fn restart_call(&self, devices: bool) {
+        let (attempt, client, old) = {
+            let mut inner = self.lock();
+            let client = inner.call.as_ref().map(|c| c.client.clone());
+            let old = if devices { inner.audio.take() } else { None };
+            (inner.attempt, client, old)
+        };
+        drop(old); // Release the devices first.
+        let Some(client) = client else { return };
+        let settings = self.settings();
+        let unavailable = self.apply_talk_mode(&settings);
+        let audio = devices.then(|| {
+            Audio::start(
+                settings.input_device.as_deref(),
+                settings.output_device.as_deref(),
+                self.gate.clone(),
+                Some(client),
+            )
+        });
         let mut inner = self.lock();
-        if inner.call.is_some() {
-            self.restart_audio(&mut inner);
+        if inner.attempt != attempt {
+            drop(inner);
+            ptt::stop(); // The call this was for is gone.
+            return;
         }
+        inner.local.ptt_unavailable = unavailable;
+        let replaced = match audio {
+            Some(Ok(audio)) => {
+                inner.local.audio_error = None;
+                inner.audio.replace(audio)
+            }
+            Some(Err(e)) => {
+                inner.local.audio_error = Some(e);
+                inner.audio.take()
+            }
+            None => None,
+        };
         drop(inner);
+        drop(replaced);
+    }
+
+    fn restart_audio(&self) {
+        self.restart_call(true);
+    }
+
+    /// Applies changed settings to a running call; `devices` when the audio
+    /// devices changed.
+    pub fn settings_changed(&self, devices: bool) {
+        self.restart_call(devices);
         self.emit();
     }
 
     /// Starts or stops the microphone test of the join view. A call's own
-    /// audio is left alone.
+    /// audio is left alone. Must run inside the tokio runtime.
     pub fn mic_test(&self, on: bool) -> Result<(), String> {
-        let mut inner = self.lock();
-        if inner.call.is_some() {
+        let (attempt, old) = {
+            let mut inner = self.lock();
+            if inner.call.is_some() {
+                return Ok(());
+            }
+            (inner.attempt, inner.audio.take())
+        };
+        drop(old);
+        if !on {
             return Ok(());
         }
-        inner.audio = None;
-        if on {
-            let input = self.settings().input_device;
-            inner.audio = Some(Audio::start(
-                input.as_deref(),
-                None,
-                self.gate.clone(),
-                None,
-            )?);
+        let input = self.settings().input_device;
+        let audio = Audio::start(input.as_deref(), None, self.gate.clone(), None)?;
+        let mut inner = self.lock();
+        if inner.attempt != attempt || inner.call.is_some() {
+            return Ok(()); // `audio` is dropped after the guard.
         }
+        let replaced = inner.audio.replace(audio);
+        drop(inner);
+        drop(replaced);
         Ok(())
     }
 
@@ -538,16 +588,21 @@ impl Session {
         self.emit();
     }
 
-    /// Sets a member's volume in percent, up to [`MAX_VOLUME`].
-    pub fn set_volume(&self, session_id: u32, percent: u8) {
-        let percent = percent.min(MAX_VOLUME);
-        let mut inner = self.lock();
-        inner.local.volumes.insert(session_id, percent);
-        if let Some(audio) = &inner.audio {
-            audio.set_gain(session_id, f32::from(percent) / 100.0);
+    /// Sets a member's volume in percent (see `Settings::set_volume`). It is kept
+    /// by identity key, so it survives reconnects and restarts.
+    pub fn set_volume(&self, session_id: u32, percent: u8) -> Result<(), String> {
+        let state = self.client()?.state();
+        let member = state.members.get(&session_id).ok_or("No such user.")?;
+        let settings = self
+            .app
+            .state::<Store>()
+            .update(|s| s.set_volume(&member.public_key, percent));
+        let gain = f32::from(settings.volume(&member.public_key)) / 100.0;
+        if let Some(audio) = &self.lock().audio {
+            audio.set_gain(session_id, gain);
         }
-        drop(inner);
         self.emit();
+        Ok(())
     }
 
     /// Sends a request; the change itself arrives as an event.
@@ -566,7 +621,7 @@ impl Session {
         let inner = self.lock();
         let call = inner.call.as_ref().ok_or("Not connected.")?;
         Ok(Invite {
-            token,
+            token: Some(token),
             ..call.invite.clone()
         }
         .link())
@@ -579,26 +634,26 @@ impl Session {
 
     fn on_event(&self, event: &Event) {
         let mut inner = self.lock();
-        let phase = inner.phase.on(event);
-        self.set_phase(&mut inner, phase);
-        if let Event::MemberLeft(m) = event {
-            inner.local.volumes.remove(&m.session_id);
-        }
+        inner.phase = inner.phase.on(event);
     }
 
-    fn on_stopped(&self, e: &kuulu_client::Error) {
-        let mut inner = self.lock();
-        inner.call = None;
-        inner.audio = None;
-        self.set_phase(&mut inner, Phase::client_failed(e));
-        drop(inner);
-        ptt::unregister(&self.app);
+    /// The client stopped for good; ends the call. `attempt` is the call's.
+    fn on_stopped(&self, attempt: u64, e: &kuulu_client::Error) {
+        let old = {
+            let mut inner = self.lock();
+            if inner.attempt != attempt {
+                return;
+            }
+            inner.reset(Phase::client_failed(e)).1
+        };
+        drop(old);
+        ptt::stop();
     }
 }
 
 /// Follows a call's client until it stops: events and periodic stats
 /// become `session` events.
-async fn watch(app: AppHandle, client: Arc<Client>) {
+async fn watch(app: AppHandle, client: Arc<Client>, attempt: u64) {
     let session = app.state::<Session>();
     let mut events = client.events();
     let mut stats = tokio::time::interval(STATS_INTERVAL);
@@ -611,7 +666,7 @@ async fn watch(app: AppHandle, client: Arc<Client>) {
                 Err(RecvError::Closed) => return,
             },
             e = client.stopped() => {
-                session.on_stopped(&e);
+                session.on_stopped(attempt, &e);
                 session.emit();
                 return;
             }
@@ -694,20 +749,23 @@ mod tests {
         assert_eq!(Idle.on(&Event::Connected), Idle);
         let failed = Phase::failed("kicked", false);
         assert_eq!(failed.on(&Event::Connected), failed);
-        assert!(Reconnecting.in_call() && !Connecting.in_call() && !failed.in_call());
+        assert!(Reconnecting.blocks_update() && Connecting.blocks_update());
+        assert!(!failed.blocks_update() && !Idle.blocks_update());
     }
 
     #[test]
     fn snapshot_groups_members_by_channel() {
-        let mut local = Local::default();
-        local.volumes.insert(1, 85);
+        let local = Local::default();
+        let mut settings = Settings::default();
+        // Volumes follow the identity key (member 1 has key [1; 32]).
+        settings.set_volume(&[1; 32], 85);
         let state = state();
         let invite = invite();
         let snap = snapshot(
             &Phase::Connected,
             Some((&state, &invite)),
             &local,
-            &Settings::default(),
+            &settings,
             Some(Duration::from_millis(22)),
             None,
             true,

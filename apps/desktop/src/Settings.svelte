@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { api, message, type Device, type Preferences, type Snapshot } from './lib/api'
+  import { api, keyLabel, message, type Device, type Preferences, type Snapshot } from './lib/api'
   import Icon from './lib/Icon.svelte'
   import LatencyBar from './lib/LatencyBar.svelte'
 
@@ -26,23 +26,20 @@
     await api.setPreferences(prefs).catch((e) => (error = message(e)))
   }
 
-  // Key names are DOM `code`s, which the global shortcut parser accepts.
-  function captureKey(e: KeyboardEvent) {
-    if (!capturing || !prefs) return
-    e.preventDefault()
-    if (e.code === 'Escape') {
-      capturing = false
-      return
+  // Rust listens for the input itself, so mouse side buttons work too.
+  async function captureKey() {
+    if (!prefs) return
+    capturing = true
+    error = null
+    try {
+      const key = await api.capturePttKey()
+      if (key) prefs.ptt_key = key
+    } catch (e) {
+      error = message(e)
     }
-    if (/^(Control|Shift|Alt|Meta|OS)/.test(e.code)) return
-    const mods = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Super']
-    prefs.ptt_shortcut = [...mods.filter(Boolean), e.code].join('+')
     capturing = false
-    save()
   }
 </script>
-
-<svelte:window onkeydown={captureKey} />
 
 <div class="layout">
   <nav>
@@ -132,10 +129,10 @@
           </label>
         </div>
         <span class="field">Push-to-talk key</span>
-        <button onclick={() => (capturing = true)}>
-          {capturing ? 'Press a key… (Esc cancels)' : prefs.ptt_shortcut}
+        <button onclick={captureKey} disabled={capturing}>
+          {capturing ? 'Press a key or mouse side button… (Esc cancels)' : keyLabel(prefs.ptt_key)}
         </button>
-        <p class="hint">Keyboard keys only; mouse buttons are not supported yet.</p>
+        <p class="hint">Any key or mouse side button. The game still receives it.</p>
         {#if snap.talk.fallback_reason}<p class="error">{snap.talk.fallback_reason}</p>{/if}
       </section>
 

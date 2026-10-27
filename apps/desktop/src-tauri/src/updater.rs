@@ -42,12 +42,6 @@ pub fn spawn(app: AppHandle) {
     });
 }
 
-/// The single hook that defers installing an update: true while the user
-/// is in a voice call.
-fn in_call(app: &AppHandle) -> bool {
-    app.state::<Session>().in_call()
-}
-
 async fn update(app: &AppHandle) -> tauri_plugin_updater::Result<()> {
     // A prerelease build starts on the beta channel.
     let default = !app.package_info().version.pre.is_empty();
@@ -69,14 +63,20 @@ async fn update(app: &AppHandle) -> tauri_plugin_updater::Result<()> {
     // The builder timeout also caps the whole download; allow slow links.
     update.timeout = Some(DOWNLOAD_TIMEOUT);
     let bytes = update.download(|_, _| {}, || {}).await?;
-    if in_call(app) {
+    // Waits until no call is active or starting; from then on joins are
+    // refused until the restart.
+    let session = app.state::<Session>();
+    if !session.try_begin_install() {
         // The UI shows this quietly; the call is never interrupted.
         let _ = app.emit("update-pending", &update.version);
-        while in_call(app) {
+        while !session.try_begin_install() {
             thread::sleep(IN_CALL_POLL);
         }
     }
     // On Windows the installer exits the app here and relaunches it itself.
-    update.install(bytes)?;
+    if let Err(e) = update.install(bytes) {
+        session.install_failed();
+        return Err(e);
+    }
     app.restart();
 }

@@ -18,9 +18,17 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 fn main() {
     tauri::Builder::default()
+        // First, per its docs: a second instance (e.g. started by a clicked
+        // kuulu:// link on Windows or Linux) hands its arguments to this one,
+        // where the deep-link plugin turns them into an open-url event.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let config = app.path().app_config_dir().ok();
             app.manage(Store::open(config.map(|d| d.join(settings::FILE))));
@@ -46,6 +54,7 @@ fn main() {
             commands::mic_level,
             commands::preferences,
             commands::set_preferences,
+            commands::capture_ptt_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kuulu");
@@ -54,9 +63,8 @@ fn main() {
 /// Routes `kuulu://` links to the join view. Without one, rejoins the
 /// server we were in when the app last closed (e.g. for an update).
 ///
-/// On Windows and Linux every opened link starts a new app instance with
-/// the link as its argument (single-instance forwarding needs another
-/// plugin); macOS delivers links to the running app.
+/// macOS delivers links to the running app; on Windows and Linux a link
+/// starts a second instance, which single-instance forwards here.
 fn open_invites(app: &tauri::AppHandle) {
     let links = app.deep_link();
     #[cfg(any(windows, target_os = "linux"))]

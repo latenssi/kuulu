@@ -201,7 +201,8 @@
               max="200"
               step="5"
               value={m.volume}
-              oninput={(e) => api.setVolume(m.id, +e.currentTarget.value)}
+              oninput={(e) => (m.volume = +e.currentTarget.value)}
+              onchange={(e) => run(api.setVolume(m.id, +e.currentTarget.value))}
             />
             <span>{m.volume} %</span>
           </label>

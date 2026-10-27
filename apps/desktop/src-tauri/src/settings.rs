@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::{fs, io};
@@ -25,14 +26,15 @@ pub struct Settings {
     pub input_device: Option<String>,
     pub output_device: Option<String>,
     pub talk_mode: TalkMode,
-    /// Global push-to-talk shortcut, e.g. "F8" or "Ctrl+Backquote"
-    /// (tauri-plugin-global-shortcut syntax; key names are DOM `code`s).
-    pub ptt_shortcut: String,
+    /// Push-to-talk input, named as in `ptt` (e.g. "F8", "Mouse4").
+    pub ptt_key: String,
     /// Update channel; unset until the updater's first run decides it.
     pub beta_updates: Option<bool>,
-    /// Invite link of the server we were in, rejoined on the next start
-    /// (e.g. after an update restart). Cleared by leaving.
+    /// Link to the server we were in, without invite token, rejoined on the
+    /// next start (e.g. after an update restart). Cleared by leaving.
     pub last_server: Option<String>,
+    /// Per-user volume in percent, by identity key (hex); see [`Self::volume`].
+    pub volumes: BTreeMap<String, u8>,
     /// Keys written by other versions, kept as they are.
     #[serde(flatten)]
     pub other: Map<String, Value>,
@@ -45,12 +47,39 @@ impl Default for Settings {
             input_device: None,
             output_device: None,
             talk_mode: TalkMode::default(),
-            ptt_shortcut: "F8".into(),
+            ptt_key: "F8".into(),
             beta_updates: None,
             last_server: None,
+            volumes: BTreeMap::new(),
             other: Map::new(),
         }
     }
+}
+
+/// Volume of a user nobody adjusted, percent.
+pub const DEFAULT_VOLUME: u8 = 100;
+pub const MAX_VOLUME: u8 = 200;
+
+impl Settings {
+    /// The volume chosen for the user with this identity key, percent.
+    pub fn volume(&self, key: &[u8; 32]) -> u8 {
+        self.volumes
+            .get(&hex(key))
+            .copied()
+            .unwrap_or(DEFAULT_VOLUME)
+    }
+
+    /// Clamped to [`MAX_VOLUME`]; the default is not stored.
+    pub fn set_volume(&mut self, key: &[u8; 32], percent: u8) {
+        match percent.min(MAX_VOLUME) {
+            DEFAULT_VOLUME => self.volumes.remove(&hex(key)),
+            percent => self.volumes.insert(hex(key), percent),
+        };
+    }
+}
+
+fn hex(key: &[u8; 32]) -> String {
+    key.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The settings in memory, saved on every change.
@@ -60,6 +89,9 @@ pub struct Store {
     /// is lost.
     path: Option<PathBuf>,
     settings: Mutex<Settings>,
+    /// Held while writing, so saves land in order without holding
+    /// `settings` during disk I/O.
+    saving: Mutex<()>,
 }
 
 impl Store {
@@ -76,6 +108,7 @@ impl Store {
         Self {
             path,
             settings: Mutex::new(settings),
+            saving: Mutex::new(()),
         }
     }
 
@@ -86,16 +119,20 @@ impl Store {
     /// Changes the settings and saves them if anything changed. Save errors
     /// are logged: settings still apply for this run.
     pub fn update(&self, change: impl FnOnce(&mut Settings)) -> Settings {
-        let mut settings = self.settings.lock().unwrap();
-        let before = settings.clone();
-        change(&mut settings);
-        if *settings != before
+        let _saving = self.saving.lock().unwrap();
+        let (changed, after) = {
+            let mut settings = self.settings.lock().unwrap();
+            let before = settings.clone();
+            change(&mut settings);
+            (*settings != before, settings.clone())
+        };
+        if changed
             && let Some(path) = &self.path
-            && let Err(e) = save(path, &settings)
+            && let Err(e) = save(path, &after)
         {
             eprintln!("cannot save {}: {e}", path.display());
         }
-        settings.clone()
+        after
     }
 
     /// Whether to follow the beta update channel. The first call stores
@@ -120,11 +157,20 @@ fn load(path: &Path) -> Result<Settings, String> {
     }
 }
 
+/// Writes a temporary file and renames it over `path`, so a crash leaves
+/// either the old or the new settings, never a torn file.
 fn save(path: &Path, settings: &Settings) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    fs::write(path, serde_json::to_string_pretty(settings)?)
+    let tmp = path.with_extension("json.tmp");
+    let mut file = fs::File::create(&tmp)?;
+    io::Write::write_all(
+        &mut file,
+        serde_json::to_string_pretty(settings)?.as_bytes(),
+    )?;
+    file.sync_all()?;
+    fs::rename(&tmp, path)
 }
 
 #[cfg(test)]
@@ -164,10 +210,11 @@ pub(crate) mod tests {
         let json = saved(&path);
         assert_eq!(json["x"], 1);
         assert_eq!(json["talk_mode"], "voice_activity");
-        let again = Store::open(Some(path)).get();
+        let again = Store::open(Some(path.clone())).get();
         assert_eq!(again.display_name, "Saara");
         assert_eq!(again.talk_mode, TalkMode::VoiceActivity);
-        assert_eq!(again.ptt_shortcut, "F8");
+        assert_eq!(again.ptt_key, "F8");
+        assert!(!path.with_extension("json.tmp").exists());
     }
 
     #[test]
@@ -180,5 +227,19 @@ pub(crate) mod tests {
         store.update(|s| s.display_name = "x".into());
         assert_eq!(store.get().display_name, "x");
         assert_eq!(fs::read_to_string(&path).unwrap(), "{oops");
+    }
+
+    #[test]
+    fn volumes_by_identity_key() {
+        let mut s = Settings::default();
+        let (a, b) = ([1; 32], [2; 32]);
+        assert_eq!(s.volume(&a), DEFAULT_VOLUME);
+        s.set_volume(&a, 85);
+        s.set_volume(&b, 250);
+        assert_eq!((s.volume(&a), s.volume(&b)), (85, MAX_VOLUME));
+        s.set_volume(&a, DEFAULT_VOLUME);
+        assert_eq!(s.volumes.len(), 1);
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["volumes"][hex(&b)], MAX_VOLUME);
     }
 }

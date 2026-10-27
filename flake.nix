@@ -22,6 +22,8 @@
           ] ++ lib.optionals stdenv.isLinux [
             # cpal + Tauri 2 on Linux
             alsa-lib openssl webkitgtk_4_1 gtk3 libsoup_3 librsvg glib
+            # monio (push-to-talk hook): Xlib + XRecord
+            libx11 libxtst
           ];
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
         };

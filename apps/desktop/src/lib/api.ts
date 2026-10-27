@@ -42,7 +42,7 @@ export interface Snapshot {
   me: number | null
   muted: boolean
   deafened: boolean
-  talk: { mode: TalkMode; shortcut: string; fallback_reason: string | null }
+  talk: { mode: TalkMode; key: string; fallback_reason: string | null }
   admin: boolean
   rtt_ms: number | null
   latency: { total_ms: number; stages: Stage[] }
@@ -54,7 +54,7 @@ export interface Preferences {
   input_device: string | null
   output_device: string | null
   talk_mode: TalkMode
-  ptt_shortcut: string
+  ptt_key: string
   beta_updates: boolean
 }
 
@@ -89,6 +89,7 @@ export const api = {
   micLevel: () => invoke<number>('mic_level'),
   preferences: () => invoke<Preferences>('preferences'),
   setPreferences: (preferences: Preferences) => invoke<void>('set_preferences', { preferences }),
+  capturePttKey: () => invoke<string | null>('capture_ptt_key'),
 }
 
 export function on<T>(event: string, handler: (payload: T) => void): Promise<UnlistenFn> {
@@ -106,7 +107,11 @@ export const initials = (name: string) =>
     .join('')
 
 export const talkLabel = (t: Snapshot['talk']) =>
-  t.mode === 'push_to_talk' && !t.fallback_reason ? `Push to talk · ${t.shortcut}` : 'Voice activity'
+  t.mode === 'push_to_talk' && !t.fallback_reason ? `Push to talk · ${keyLabel(t.key)}` : 'Voice activity'
+
+/// Push-to-talk input names (src-tauri/src/ptt.rs) for people: Mouse4 -> Mouse 4, KeyV -> V.
+export const keyLabel = (key: string) =>
+  key.replace(/^Mouse(\d+)$/, 'Mouse $1').replace(/^(Key|Num)(\w)$/, '$2')
 
 /// Commands reject with a user-facing string.
 export const message = (e: unknown) => (typeof e === 'string' ? e : String(e))

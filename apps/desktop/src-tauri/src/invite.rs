@@ -1,4 +1,5 @@
 //! Invite links: `kuulu://<host>:<port>/join?t=<token>&fp=<sha256>`.
+//! Without `t=` a link still reaches a server that already knows our key.
 //!
 //! The same link with `https://` is accepted too, so a link shared on the
 //! web can be pasted as is; host and port then still name the Kuulu server.
@@ -14,7 +15,7 @@ pub struct Invite {
     /// Domain name or IP address, without brackets.
     pub host: String,
     pub port: u16,
-    pub token: String,
+    pub token: Option<String>,
     /// SHA-256 of the server certificate, lowercase hex. The connection
     /// trusts exactly this certificate.
     pub fingerprint: String,
@@ -41,9 +42,7 @@ impl Invite {
                 .find(|(k, _)| k == key)
                 .map(|(_, v)| v.into_owned())
         };
-        let token = query("t")
-            .filter(|t| !t.is_empty())
-            .ok_or_else(|| bad("the invite code is missing"))?;
+        let token = query("t").filter(|t| !t.is_empty());
         let fingerprint = query("fp")
             .filter(|fp| fp.len() == 64 && fp.bytes().all(|b| b.is_ascii_hexdigit()))
             .ok_or_else(|| bad("the server fingerprint is missing or malformed"))?
@@ -70,9 +69,12 @@ impl Invite {
     /// The `kuulu://` link for this invite.
     pub fn link(&self) -> String {
         let mut url = Url::parse(&format!("kuulu://{}/join", self.address())).expect("valid host");
-        url.query_pairs_mut()
-            .append_pair("t", &self.token)
-            .append_pair("fp", &self.fingerprint);
+        let mut query = url.query_pairs_mut();
+        if let Some(token) = &self.token {
+            query.append_pair("t", token);
+        }
+        query.append_pair("fp", &self.fingerprint);
+        drop(query);
         url.into()
     }
 
@@ -103,7 +105,7 @@ mod tests {
             Invite {
                 host: "perjantai.example".into(),
                 port: 7701,
-                token: "abc".into(),
+                token: Some("abc".into()),
                 fingerprint: FP.to_ascii_lowercase(),
             }
         );
@@ -112,7 +114,7 @@ mod tests {
         let https =
             Invite::parse(&format!("https://perjantai.example/join?fp={FP}&t=abc")).unwrap();
         assert_eq!(https.port, DEFAULT_PORT);
-        assert_eq!(https.token, "abc");
+        assert_eq!(https.token.as_deref(), Some("abc"));
 
         let v6 = Invite::parse(&format!("kuulu://[::1]:7700/join?t=x&fp={FP}")).unwrap();
         assert_eq!(v6.host, "::1");
@@ -127,6 +129,10 @@ mod tests {
                 .link(),
             format!("kuulu://h:1/join?t=x&fp={}", FP.to_ascii_lowercase())
         );
+        // A known key rejoins without a token.
+        let known = Invite::parse(&format!("kuulu://h:1/join?fp={FP}&t=")).unwrap();
+        assert_eq!(known.token, None);
+        assert!(!known.link().contains("t="));
     }
 
     #[test]
@@ -136,8 +142,6 @@ mod tests {
             "perjantai.example",
             &format!("http://h:1/join?t=x&fp={FP}"),
             &format!("kuulu://h:1/other?t=x&fp={FP}"),
-            &format!("kuulu://h:1/join?fp={FP}"),
-            &format!("kuulu://h:1/join?t=&fp={FP}"),
             "kuulu://h:1/join?t=x",
             "kuulu://h:1/join?t=x&fp=1234",
             &format!("kuulu://h:1/join?t=x&fp={}", "z".repeat(64)),

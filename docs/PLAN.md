@@ -168,7 +168,7 @@ Näkymät noudattavat [mockupia](https://claude.ai/artifact/VX6zrxTnwTBNUzJEf3LX
 
 **Kutsulinkit:** muoto `kuulu://<host>:<portti>/join?t=<kutsu>&fp=<sertifikaatin SHA-256>`. Linkki toimii myös https-osoitteena, joka ohjaa sovellukseen tai lataussivulle. Deep link -käsittely tehdään tauri-plugin-deep-linkillä.
 
-**Push-to-talk:** globaali näppäin tai hiiren lisänäppäin. Windowsilla ja X11:llä tämä onnistuu suoraan. macOS vaatii saavutettavuusoikeuden, ja Waylandilla käytetään GlobalShortcuts-portaalia. Jos globaali näppäin ei ole käytettävissä, client tarjoaa VAD:n ja kertoo syyn.
+**Push-to-talk:** globaali näppäin tai hiiren lisänäppäin. Client tarkkailee syötettä passiivisella käyttöjärjestelmäkoukulla (monio) kuluttamatta sitä, joten peli saa saman näppäimen. Windowsilla ja X11:llä tämä onnistuu suoraan, ja macOS vaatii saavutettavuusoikeuden. Waylandilla sovelluksille ei ole tällaista koukkua, joten client käyttää VAD:ia ja kertoo syyn; sama pätee, jos koukku ei käynnisty.
 
 **Paikallinen data:** asetukset JSON-tiedostona sovelluksen konfiguraatiokansiossa; identiteettiavain käyttöjärjestelmän avainnipussa.
 
