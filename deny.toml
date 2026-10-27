@@ -14,6 +14,11 @@ ignore = [
     { id = "RUSTSEC-2026-0368", reason = "zip via tauri-plugin-updater, not reachable" },
     { id = "RUSTSEC-2026-0369", reason = "zip via tauri-plugin-updater, not reachable" },
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: unmaintained build-time dep of Tauri's GTK stack" },
+    # zbus 5 crates merged into zbus 6; pulled by keyring's Secret Service
+    # store (Linux). Remove once that store moves to zbus 6.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant via keyring, merged into zbus 6" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names via keyring, merged into zbus 6" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive via keyring, merged into zbus 6" },
 ]
 
 [licenses]
@@ -26,6 +31,8 @@ allow = [
     "BSD-1-Clause",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    # tiny-keccak (build-time, via tauri-plugin-deep-link's rust-ini).
+    "CC0-1.0",
     "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
