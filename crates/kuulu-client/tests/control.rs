@@ -97,12 +97,12 @@ async fn heard(client: &Client) -> usize {
 async fn channels_isolate_voice_and_switching_works() {
     let dir = data_dir("channels", &[], &["General", "Games"]);
     let (_server, addr, fp) = start(&dir);
-    let a = Client::connect_as(addr, &fp, &IdentityKey::generate(), "Aino")
+    let a = Client::connect_as(addr, &fp, &IdentityKey::generate(), "Aino", None)
         .await
         .unwrap();
     // No display name, as clients from before display names sent.
     let b = Client::connect(addr, &fp).await.unwrap();
-    let c = Client::connect_as(addr, &fp, &IdentityKey::generate(), "Cecilia")
+    let c = Client::connect_as(addr, &fp, &IdentityKey::generate(), "Cecilia", None)
         .await
         .unwrap();
     let c_id = c.session_id().unwrap();
@@ -138,12 +138,12 @@ async fn admin_actions_need_the_admin_role() {
     let admin_key = IdentityKey::generate();
     let dir = data_dir("admin", &[&admin_key], &["General"]);
     let (_server, addr, fp) = start(&dir);
-    let admin = Client::connect_as(addr, &fp, &admin_key, "admin")
+    let admin = Client::connect_as(addr, &fp, &admin_key, "admin", None)
         .await
         .unwrap();
     let member = Client::connect(addr, &fp).await.unwrap();
     let other_key = IdentityKey::generate();
-    let other = Client::connect_as(addr, &fp, &other_key, "other")
+    let other = Client::connect_as(addr, &fp, &other_key, "other", None)
         .await
         .unwrap();
     let (member_id, other_id) = (member.session_id().unwrap(), other.session_id().unwrap());
@@ -208,14 +208,17 @@ async fn admin_actions_need_the_admin_role() {
         Err(RequestError::Invalid)
     );
 
+    assert!(other.rtt().is_some());
     admin.request(Request::Kick(other_id)).await.unwrap();
+    assert_eq!(timeout(WAIT, other.stopped()).await.unwrap(), Error::Kicked);
     assert_eq!(
         timeout(WAIT, other.recv()).await.unwrap(),
         Err(Error::Kicked)
     );
+    assert_eq!(other.rtt(), None);
     until(&member, |s| !s.members.contains_key(&other_id)).await;
     // A kick is not a ban.
-    Client::connect_as(addr, &fp, &other_key, "other")
+    Client::connect_as(addr, &fp, &other_key, "other", None)
         .await
         .unwrap();
     cleanup(&dir);
@@ -227,10 +230,10 @@ async fn bans_and_channels_survive_restart() {
     let banned_key = IdentityKey::generate();
     let dir = data_dir("ban", &[&admin_key], &["General"]);
     let (server, addr, fp) = start(&dir);
-    let admin = Client::connect_as(addr, &fp, &admin_key, "admin")
+    let admin = Client::connect_as(addr, &fp, &admin_key, "admin", None)
         .await
         .unwrap();
-    let banned = Client::connect_as(addr, &fp, &banned_key, "troll")
+    let banned = Client::connect_as(addr, &fp, &banned_key, "troll", None)
         .await
         .unwrap();
 
@@ -242,7 +245,7 @@ async fn bans_and_channels_survive_restart() {
         timeout(WAIT, banned.recv()).await.unwrap(),
         Err(Error::Rejected(Reason::Banned))
     );
-    let rejoin = Client::connect_as(addr, &fp, &banned_key, "troll").await;
+    let rejoin = Client::connect_as(addr, &fp, &banned_key, "troll", None).await;
     assert_eq!(rejoin.err(), Some(Error::Rejected(Reason::Banned)));
     let config = std::fs::read(dir.join("kuulu.toml")).unwrap();
     admin
@@ -262,7 +265,7 @@ async fn bans_and_channels_survive_restart() {
     // Config channels only seed the first start.
     write_config(&dir, 0, 100, &[&admin_key], &["Ignored", "Also ignored"]);
     let (_server, addr, fp) = start(&dir);
-    let rejoin = Client::connect_as(addr, &fp, &banned_key, "troll").await;
+    let rejoin = Client::connect_as(addr, &fp, &banned_key, "troll", None).await;
     assert_eq!(rejoin.err(), Some(Error::Rejected(Reason::Banned)));
     let client = Client::connect(addr, &fp).await.unwrap();
     let channels: Vec<_> = client.state().channels.into_iter().collect();

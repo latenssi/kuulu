@@ -192,26 +192,29 @@ pub struct Client {
 }
 
 impl Client {
-    /// [`Client::connect_as`] with a throwaway identity and no display name.
+    /// [`Client::connect_as`] with a throwaway identity, no display name and
+    /// no invite.
     pub async fn connect(addr: SocketAddr, fingerprint: &str) -> Result<Self, Error> {
-        Self::connect_as(addr, fingerprint, &IdentityKey::generate(), "").await
+        Self::connect_as(addr, fingerprint, &IdentityKey::generate(), "", None).await
     }
 
     /// Connects to `addr` as `key`, trusting only the certificate with this
-    /// SHA-256 `fingerprint` (hex), and completes the handshake. Any failure
-    /// here is returned; once connected, lost connections are retried with
-    /// backoff.
+    /// SHA-256 `fingerprint` (hex), and completes the handshake, presenting
+    /// the `invite` token if any. Any failure here is returned; once
+    /// connected, lost connections are retried with backoff.
     pub async fn connect_as(
         addr: SocketAddr,
         fingerprint: &str,
         key: &IdentityKey,
         display_name: &str,
+        invite: Option<&str>,
     ) -> Result<Self, Error> {
         let hello = Hello {
             protocol_version: kuulu_proto::PROTOCOL_VERSION,
             min_protocol_version: kuulu_proto::MIN_PROTOCOL_VERSION,
             app_version: env!("CARGO_PKG_VERSION").into(),
             display_name: display_name.into(),
+            invite: invite.unwrap_or_default().into(),
             ..Default::default()
         };
         Self::connect_with(addr, fingerprint, key.clone(), hello).await
@@ -233,6 +236,29 @@ impl Client {
         match &*self.status.borrow() {
             Status::Connected { session_id, .. } => Some(*session_id),
             _ => None,
+        }
+    }
+
+    /// Round-trip time to the server, smoothed by QUIC; `None` while
+    /// reconnecting.
+    pub fn rtt(&self) -> Option<Duration> {
+        match &*self.status.borrow() {
+            Status::Connected { conn, .. } => Some(conn.rtt()),
+            _ => None,
+        }
+    }
+
+    /// Waits until the client has stopped for good (e.g. kicked, banned, or
+    /// a version reject on reconnect) and returns why.
+    pub async fn stopped(&self) -> Error {
+        let mut status = self.status.clone();
+        loop {
+            if let Status::Failed(e) = &*status.borrow_and_update() {
+                return e.clone();
+            }
+            if status.changed().await.is_err() {
+                return Error::Connection("client stopped".into());
+            }
         }
     }
 
