@@ -1,4 +1,4 @@
-//! Default capture and playback devices via cpal, connected to the audio
+//! Capture and playback devices via cpal, connected to the audio
 //! thread through rtrb ring buffers of mono 48 kHz f32 samples.
 //!
 //! Callbacks only move samples and wake the audio thread (`Thread::unpark`,
@@ -74,6 +74,60 @@ impl Stream {
     }
 }
 
+/// An audio device as offered to the user.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceInfo {
+    /// Stable across runs where the platform allows; pass it to [`capture`]
+    /// or [`playback`].
+    pub id: String,
+    pub name: String,
+}
+
+/// Input devices of the default host; empty if it cannot list them.
+pub fn inputs() -> Vec<DeviceInfo> {
+    list(cpal::default_host().input_devices())
+}
+
+/// Output devices of the default host; empty if it cannot list them.
+pub fn outputs() -> Vec<DeviceInfo> {
+    list(cpal::default_host().output_devices())
+}
+
+fn list<D: DeviceTrait>(devices: Result<impl Iterator<Item = D>, cpal::Error>) -> Vec<DeviceInfo> {
+    devices
+        .into_iter()
+        .flatten()
+        .filter_map(|d| {
+            Some(DeviceInfo {
+                id: d.id().ok()?.to_string(),
+                name: d.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The device with this id, or the host's default when `id` is `None` or
+/// no longer present (e.g. unplugged).
+fn find(id: Option<&str>, input: bool) -> Result<cpal::Device, Error> {
+    let host = cpal::default_host();
+    let chosen = id
+        .and_then(|id| id.parse().ok())
+        .and_then(|id| host.device_by_id(&id));
+    let device = match chosen {
+        Some(device) => Some(device),
+        None if input => host.default_input_device(),
+        None => host.default_output_device(),
+    };
+    device.ok_or_else(|| {
+        if input {
+            "no input device"
+        } else {
+            "no output device"
+        }
+        .into()
+    })
+}
+
 /// Captured samples, read by the audio thread.
 pub struct Input(rtrb::Consumer<f32>);
 
@@ -113,13 +167,12 @@ impl Output {
     }
 }
 
-/// Starts the default input device. Its first channel arrives in the
-/// returned [`Input`]; a callback that does not fit is dropped whole.
-pub fn capture(wake: Thread) -> Result<(Stream, Input), Error> {
+/// Starts input device `id` (see [`inputs`]; `None` or a missing device
+/// means the default). Its first channel arrives in the returned [`Input`];
+/// a callback that does not fit is dropped whole.
+pub fn capture(id: Option<&str>, wake: Thread) -> Result<(Stream, Input), Error> {
     let (mut ring, consumer) = rtrb::RingBuffer::new(RING);
-    let device = cpal::default_host()
-        .default_input_device()
-        .ok_or("no input device")?;
+    let device = find(id, true)?;
     let config = choose(device.supported_input_configs()?)?;
     let channels = config.channels as usize;
     let stats = Arc::new(Stats::default());
@@ -170,13 +223,12 @@ fn capture_callback(
     }
 }
 
-/// Starts the default output device, playing the returned [`Output`] on
-/// every channel. Missing samples play as silence and count as an underrun.
-pub fn playback(wake: Thread) -> Result<(Stream, Output), Error> {
+/// Starts output device `id` (see [`outputs`]; `None` or a missing device
+/// means the default), playing the returned [`Output`] on every channel.
+/// Missing samples play as silence and count as an underrun.
+pub fn playback(id: Option<&str>, wake: Thread) -> Result<(Stream, Output), Error> {
     let (producer, mut ring) = rtrb::RingBuffer::new(RING);
-    let device = cpal::default_host()
-        .default_output_device()
-        .ok_or("no output device")?;
+    let device = find(id, false)?;
     let config = choose(device.supported_output_configs()?)?;
     let channels = config.channels as usize;
     let stats = Arc::new(Stats::default());

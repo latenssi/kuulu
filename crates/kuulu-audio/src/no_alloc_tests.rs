@@ -3,7 +3,7 @@
 //! `assert_no_alloc` in this test binary.
 
 use crate::device::tests::rings;
-use crate::{Decoder, Encoder, FRAME_SAMPLES, Framer, JitterBuffer, MAX_PAYLOAD, Mixer};
+use crate::{Decoder, Encoder, FRAME_SAMPLES, Framer, JitterBuffer, MAX_PAYLOAD, Mixer, Vad};
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 
 #[global_allocator]
@@ -17,6 +17,7 @@ fn audio_path_does_not_allocate() {
     let mut decoder = Decoder::new().unwrap();
     let mut jb = JitterBuffer::new();
     let mut mixer = Mixer::new();
+    let mut vad = Vad::new();
     let mut decoded = [0.0; FRAME_SAMPLES];
     let mut mixed = [0.0; FRAME_SAMPLES];
     let mut device_out = [0.0; 480]; // one 240-sample stereo period
@@ -37,6 +38,7 @@ fn audio_path_does_not_allocate() {
             devices.capture(&samples);
             input.drain(|s| {
                 framer.push(s, |frame| {
+                    vad.is_open(frame);
                     let payload = encoder.encode(frame);
                     if seq == LATE_SEQ {
                         late[..payload.len()].copy_from_slice(payload);

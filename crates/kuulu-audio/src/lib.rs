@@ -10,11 +10,13 @@ mod jitter;
 mod mixer;
 #[cfg(test)]
 mod no_alloc_tests;
+mod vad;
 
 pub use codec::{Decoder, Encoder, MAX_PAYLOAD};
 pub use framer::Framer;
 pub use jitter::JitterBuffer;
 pub use mixer::Mixer;
+pub use vad::{Vad, level};
 
 pub const SAMPLE_RATE: u32 = 48_000;
 /// 10 ms at 48 kHz: the unit of encoding, jitter buffering and mixing.
