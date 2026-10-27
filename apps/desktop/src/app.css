@@ -1,0 +1,148 @@
+:root {
+  --bg: #19181c;
+  --panel: #222126;
+  --panel-2: #2a292f;
+  --line: #3a3940;
+  --text: #ecebef;
+  --dim: #9c99a3;
+  --faint: #6f6c76;
+  --danger: #ef7a7a;
+  --radius: 18px;
+  --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(60vw 40vh at 85% 0%, #3a2f45aa, transparent 70%),
+    radial-gradient(40vw 40vh at 100% 40%, #2c3a4255, transparent 70%),
+    var(--bg);
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: transparent;
+  border-radius: 999px;
+  padding: 10px 22px;
+}
+button:hover:not(:disabled) {
+  background: var(--panel-2);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+button.primary {
+  background: #f4f3f6;
+  color: #17161a;
+  border-color: transparent;
+}
+button.primary:hover:not(:disabled) {
+  background: #fff;
+}
+
+input[type='text'],
+select {
+  width: 100%;
+  background: #1c1b20;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
+.logo {
+  font-size: 34px;
+  font-weight: 400;
+  letter-spacing: -0.5px;
+  background: linear-gradient(90deg, #f4b6e6, #b3d8f0);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.card {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 28px 30px;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.label {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid #34333a;
+  background: #2b2a30;
+  font-size: 13px;
+}
+.avatar.speaking {
+  border-color: #f4f3f6;
+}
+
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 22px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.pill:has(input:checked) {
+  border-color: #cfcdd4;
+}
+.pill:has(input:disabled) {
+  opacity: 0.45;
+  cursor: default;
+}
+.pill input {
+  margin: 0;
+  accent-color: #f4f3f6;
+}
+
+.error {
+  color: var(--danger);
+  font-size: 14px;
+}
+
+.hint {
+  color: var(--dim);
+  font-size: 13px;
+  margin: 8px 0 0;
+}

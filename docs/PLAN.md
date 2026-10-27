@@ -278,10 +278,10 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 
 ### M5 – Käyttöliittymä ja liittyminen
 
-- [ ] Mockupin kolme näkymää
-- [ ] Identiteettiavain käyttöjärjestelmän avainnippuun
-- [ ] Kutsulinkit, sertifikaatin kiinnitys ja deep link
-- [ ] Latenssinäyttö ja asetusten latenssibudjetti
+- [x] Mockupin kolme näkymää
+- [x] Identiteettiavain käyttöjärjestelmän avainnippuun
+- [x] Kutsulinkit, sertifikaatin kiinnitys ja deep link
+- [x] Latenssinäyttö ja asetusten latenssibudjetti
 
 **Valmis kun:** uusi käyttäjä pääsee kutsulinkistä puhumaan alle minuutissa ilman tiliä.
 
