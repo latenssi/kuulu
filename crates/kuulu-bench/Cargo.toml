@@ -13,3 +13,4 @@ kuulu-proto = { path = "../kuulu-proto" }
 opus = "0.4.0"
 # Same libopus as `opus`; only for opus_packet_has_lbrr, which `opus` lacks.
 opusic-sys = "0.7.6"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

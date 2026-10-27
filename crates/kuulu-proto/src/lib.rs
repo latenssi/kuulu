@@ -47,20 +47,20 @@ pub fn cert_fingerprint(cert_der: &[u8]) -> String {
 /// quinn charges each queued datagram its payload plus one `Bytes` handle
 /// (32 B on 64-bit targets).
 const DATAGRAM_OVERHEAD: usize = 32;
-/// Typical packet: header + 10 ms Opus frame at 32 kbit/s (40 B) + the
-/// redundant previous frame = 92 B.
-const TYPICAL_VOICE_PACKET: usize = HEADER_LEN + 2 * 40;
-/// Client send queue: two typical packets (248 B), i.e. the frame being sent
+/// Typical packet: header + redundancy length byte + 10 ms Opus frame at
+/// 32 kbit/s (40 B) + the redundant previous frame = 93 B.
+const TYPICAL_VOICE_PACKET: usize = HEADER_LEN + 1 + 2 * 40;
+/// Client send queue: two typical packets (250 B), i.e. the frame being sent
 /// plus at most one 10 ms frame waiting.
 const CLIENT_SEND_BUFFER: usize = 2 * (TYPICAL_VOICE_PACKET + DATAGRAM_OVERHEAD);
-/// Largest voice packet a client can send (216 B): it must fit the client
+/// Largest voice packet a client can send (218 B): it must fit the client
 /// send queue alone. Larger packets are dropped.
 pub const MAX_VOICE_PACKET: usize = CLIENT_SEND_BUFFER - DATAGRAM_OVERHEAD;
 /// Server queue towards each listener: one frame from each of 4 simultaneous
-/// speakers (496 B). More than 4 people talking at once is unintelligible
+/// speakers (500 B). More than 4 people talking at once is unintelligible
 /// anyway; with a single speaker a stall holds at most ~40 ms of audio.
 const SERVER_SEND_BUFFER: usize = 4 * (TYPICAL_VOICE_PACKET + DATAGRAM_OVERHEAD);
-/// Receive queue (7936 B): the network task drains it continuously, so it only
+/// Receive queue (8000 B): the network task drains it continuously, so it only
 /// fills in bursts; room for one max-size frame from 32 speakers keeps a crowd
 /// from evicting fresh audio. Late frames are the jitter buffer's to discard.
 const RECEIVE_BUFFER: usize = 32 * (MAX_VOICE_PACKET + DATAGRAM_OVERHEAD);
@@ -88,4 +88,20 @@ fn transport_config(send_buffer: usize) -> quinn::TransportConfig {
                 .expect("valid idle timeout"),
         ));
     config
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The server queue must hold a frame from each of 4 speakers; with the
+    /// length byte left out of the typical packet it held only 3, and the
+    /// load test lost 16 % with 4 talking in one channel.
+    #[test]
+    fn server_queue_holds_four_typical_packets() {
+        let mut payload = [0; MAX_VOICE_PACKET];
+        let len = HEADER_LEN + redundancy::write(&[0; 40], &[0; 40], &mut payload).unwrap();
+        assert_eq!(len, TYPICAL_VOICE_PACKET);
+        assert!(4 * (len + DATAGRAM_OVERHEAD) <= SERVER_SEND_BUFFER);
+    }
 }
