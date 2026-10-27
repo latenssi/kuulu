@@ -4,7 +4,7 @@
 //! Callbacks only move samples and wake the audio thread (`Thread::unpark`,
 //! a non-blocking syscall without locks or allocation).
 
-use crate::SAMPLE_RATE;
+use crate::{FRAME_SAMPLES, Frame, SAMPLE_RATE};
 use assert_no_alloc::assert_no_alloc;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{
@@ -16,6 +16,10 @@ use std::thread::Thread;
 
 /// Requested device buffer: 5 ms at 48 kHz, as in the latency budget.
 pub const DEVICE_BUFFER: u32 = 240;
+
+/// Ring capacity in samples (100 ms): headroom only, rings normally hold
+/// about one device period.
+const RING: usize = 4800;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -44,9 +48,25 @@ impl Stream {
     }
 }
 
-/// Starts the default input device, pushing its first channel into `ring`.
-/// A callback that does not fit in `ring` is dropped whole.
-pub fn capture(mut ring: rtrb::Producer<f32>, wake: Thread) -> Result<Stream, Error> {
+/// Captured samples, read by the audio thread.
+pub struct Input(rtrb::Consumer<f32>);
+
+impl Input {
+    /// Passes everything captured so far to `f`, in one or two slices.
+    pub fn drain(&mut self, mut f: impl FnMut(&[f32])) {
+        if let Ok(chunk) = self.0.read_chunk(self.0.slots()) {
+            let (a, b) = chunk.as_slices();
+            f(a);
+            f(b);
+            chunk.commit_all();
+        }
+    }
+}
+
+/// Starts the default input device. Its first channel arrives in the
+/// returned [`Input`]; a callback that does not fit is dropped whole.
+pub fn capture(wake: Thread) -> Result<(Stream, Input), Error> {
+    let (mut ring, consumer) = rtrb::RingBuffer::new(RING);
     let device = cpal::default_host()
         .default_input_device()
         .ok_or("no input device")?;
@@ -78,15 +98,45 @@ pub fn capture(mut ring: rtrb::Producer<f32>, wake: Thread) -> Result<Stream, Er
         None,
     )?;
     stream.play()?;
-    Ok(Stream {
-        _stream: stream,
-        stats,
-    })
+    Ok((
+        Stream {
+            _stream: stream,
+            stats,
+        },
+        Input(consumer),
+    ))
 }
 
-/// Starts the default output device, playing `ring` on every channel.
-/// Missing samples are played as silence and counted as an underrun.
-pub fn playback(mut ring: rtrb::Consumer<f32>, wake: Thread) -> Result<Stream, Error> {
+/// Feeds the playback device from the audio thread.
+pub struct Output {
+    ring: rtrb::Producer<f32>,
+    stats: Arc<Stats>,
+}
+
+impl Output {
+    /// True while less than one device period is queued, i.e. the next
+    /// callback would run dry. Keeping the queue this short is what limits
+    /// playback buffering to about one period.
+    pub fn wants_frame(&self) -> bool {
+        let period = match self.stats.period.load(Relaxed) {
+            0 => DEVICE_BUFFER as usize,
+            p => p,
+        };
+        RING - self.ring.slots() < period
+    }
+
+    /// Queues a frame; it is dropped if the ring is full.
+    pub fn push(&mut self, frame: &Frame) {
+        if let Ok(chunk) = self.ring.write_chunk_uninit(FRAME_SAMPLES) {
+            chunk.fill_from_iter(frame.iter().copied());
+        }
+    }
+}
+
+/// Starts the default output device, playing the returned [`Output`] on
+/// every channel. Missing samples play as silence and count as an underrun.
+pub fn playback(wake: Thread) -> Result<(Stream, Output), Error> {
+    let (producer, mut ring) = rtrb::RingBuffer::new(RING);
     let device = cpal::default_host()
         .default_output_device()
         .ok_or("no output device")?;
@@ -123,10 +173,17 @@ pub fn playback(mut ring: rtrb::Consumer<f32>, wake: Thread) -> Result<Stream, E
         None,
     )?;
     stream.play()?;
-    Ok(Stream {
-        _stream: stream,
-        stats,
-    })
+    let output = Output {
+        ring: producer,
+        stats: stats.clone(),
+    };
+    Ok((
+        Stream {
+            _stream: stream,
+            stats,
+        },
+        output,
+    ))
 }
 
 /// Picks 48 kHz f32 with the fewest channels and a 240-sample buffer if the
