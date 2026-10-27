@@ -36,6 +36,21 @@ struct Channel {
     members: HashMap<u32, quinn::Connection>,
 }
 
+impl Channel {
+    /// Wraps after 2^32 joins, skipping 0 (unset) and ids still in use, so
+    /// two live sessions never share an id.
+    fn next_session_id(&mut self) -> u32 {
+        let mut id = self.last_session_id;
+        loop {
+            id = id.wrapping_add(1);
+            if id != 0 && !self.members.contains_key(&id) {
+                self.last_session_id = id;
+                return id;
+            }
+        }
+    }
+}
+
 impl Server {
     /// Binds the UDP socket; call [`Server::run`] to start accepting.
     pub fn bind(addr: SocketAddr, identity: &Identity) -> io::Result<Self> {
@@ -52,7 +67,7 @@ impl Server {
         let crypto =
             quinn::crypto::rustls::QuicServerConfig::try_from(tls).map_err(io::Error::other)?;
         let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-        config.transport_config(Arc::new(kuulu_proto::transport_config()));
+        config.transport_config(Arc::new(kuulu_proto::server_transport_config()));
         let endpoint = quinn::Endpoint::server(config, addr)?;
         Ok(Self {
             endpoint,
@@ -146,8 +161,7 @@ struct Session {
 impl Session {
     fn join(channel: &Arc<Mutex<Channel>>, conn: &quinn::Connection) -> Self {
         let mut ch = channel.lock().unwrap();
-        ch.last_session_id += 1;
-        let id = ch.last_session_id;
+        let id = ch.next_session_id();
         ch.members.insert(id, conn.clone());
         Self {
             id,

@@ -29,18 +29,47 @@ pub fn cert_fingerprint(cert_der: &[u8]) -> String {
         .collect()
 }
 
-/// QUIC transport settings shared by client and server.
-///
-/// Stale audio is worse than lost audio: the datagram buffers hold about one
-/// MTU, and quinn drops the oldest queued datagram when a new one does not fit,
-/// so a stalled link loses old frames instead of delaying new ones.
-pub fn transport_config() -> quinn::TransportConfig {
-    // quinn charges a fixed per-datagram bookkeeping overhead against the buffer.
-    const BUFFER: usize = 1200 + 64;
+// Datagram buffer sizing. Stale audio is worse than lost audio: when a new
+// datagram does not fit, quinn drops the oldest queued one, so these sizes
+// bound how far behind real time a stalled link can make a listener.
+
+/// quinn charges each queued datagram its payload plus one `Bytes` handle
+/// (32 B on 64-bit targets).
+const DATAGRAM_OVERHEAD: usize = 32;
+/// Typical packet: header + 10 ms Opus frame at 32 kbit/s (40 B) + the
+/// redundant previous frame = 92 B.
+const TYPICAL_VOICE_PACKET: usize = HEADER_LEN + 2 * 40;
+/// Client send queue: two typical packets (248 B), i.e. the frame being sent
+/// plus at most one 10 ms frame waiting.
+const CLIENT_SEND_BUFFER: usize = 2 * (TYPICAL_VOICE_PACKET + DATAGRAM_OVERHEAD);
+/// Largest voice packet a client can send (216 B): it must fit the client
+/// send queue alone. Larger packets are dropped.
+pub const MAX_VOICE_PACKET: usize = CLIENT_SEND_BUFFER - DATAGRAM_OVERHEAD;
+/// Server queue towards each listener: one frame from each of 4 simultaneous
+/// speakers (496 B). More than 4 people talking at once is unintelligible
+/// anyway; with a single speaker a stall holds at most ~40 ms of audio.
+const SERVER_SEND_BUFFER: usize = 4 * (TYPICAL_VOICE_PACKET + DATAGRAM_OVERHEAD);
+/// Receive queue (7936 B): the network task drains it continuously, so it only
+/// fills in bursts; room for one max-size frame from 32 speakers keeps a crowd
+/// from evicting fresh audio. Late frames are the jitter buffer's to discard.
+const RECEIVE_BUFFER: usize = 32 * (MAX_VOICE_PACKET + DATAGRAM_OVERHEAD);
+const _: () = assert!(SERVER_SEND_BUFFER >= MAX_VOICE_PACKET + DATAGRAM_OVERHEAD);
+
+/// QUIC transport settings for clients.
+pub fn client_transport_config() -> quinn::TransportConfig {
+    transport_config(CLIENT_SEND_BUFFER)
+}
+
+/// QUIC transport settings for the server.
+pub fn server_transport_config() -> quinn::TransportConfig {
+    transport_config(SERVER_SEND_BUFFER)
+}
+
+fn transport_config(send_buffer: usize) -> quinn::TransportConfig {
     let mut config = quinn::TransportConfig::default();
     config
-        .datagram_send_buffer_size(BUFFER)
-        .datagram_receive_buffer_size(Some(BUFFER))
+        .datagram_send_buffer_size(send_buffer)
+        .datagram_receive_buffer_size(Some(RECEIVE_BUFFER))
         .keep_alive_interval(Some(std::time::Duration::from_secs(2)))
         .max_idle_timeout(Some(
             std::time::Duration::from_secs(10)

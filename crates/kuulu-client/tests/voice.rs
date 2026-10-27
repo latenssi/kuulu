@@ -48,6 +48,30 @@ fn check(packets: &[VoicePacket], sender: u32) {
     }
 }
 
+// Single-threaded so quinn's connection driver cannot run between sends,
+// which models an uplink stalled for ten frames.
+#[tokio::test(flavor = "current_thread")]
+async fn stalled_uplink_sends_only_newest_frames() {
+    let identity = Identity::generate();
+    let server = start_server("127.0.0.1:0".parse().unwrap(), &identity).await;
+    let addr = server.local_addr().unwrap();
+    let fp = identity.fingerprint();
+    let a = Client::connect(addr, &fp).await.unwrap();
+    let b = Client::connect(addr, &fp).await.unwrap();
+
+    // Typical size: 10 ms Opus at 32 kbit/s plus the redundant previous frame.
+    let frame = [0u8; 80];
+    for seq in 0..10 {
+        a.send(flags::REDUNDANT, seq, 0, &frame);
+    }
+    let seqs: Vec<u16> = collect(&b, Duration::from_millis(500))
+        .await
+        .iter()
+        .map(|p| p.header.seq)
+        .collect();
+    assert_eq!(seqs, [8, 9]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn two_clients_talk_through_server() {
     let identity = Identity::generate();

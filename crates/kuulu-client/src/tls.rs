@@ -35,7 +35,7 @@ pub fn client_config(fingerprint: &str) -> quinn::ClientConfig {
     let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)
         .expect("TLS 1.3 config with QUIC cipher suites");
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
-    config.transport_config(Arc::new(kuulu_proto::transport_config()));
+    config.transport_config(Arc::new(kuulu_proto::client_transport_config()));
     config
 }
 
