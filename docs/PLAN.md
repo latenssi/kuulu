@@ -128,7 +128,9 @@ Palvelin ei pura ääntä. Se tarkistaa lähettäjän, kirjoittaa sender-kentän
 
 1. Client avaa yhteyden ALPN-tunnisteella `kuulu/<pääversio>`.
 2. Client lähettää `Hello`: protokollan versio, pienin tuettu versio, sovelluksen versio, ominaisuuslista, julkinen avain, kutsutunniste, näyttönimi ja avaimen hallussapidon todiste (`identity_proof`, katso Identiteetti ja turvallisuus).
-3. Palvelin vastaa `Welcome` (session-id, palvelimen nimi ja versio, sovittu protokollaversio, palvelimen ominaisuuslista, kanavat ja jäsenet) tai `Reject` syineen: liian vanha, liian uusi, kutsu vanhentunut, bannattu, virheellinen identiteetti.
+3. Palvelin vastaa `Welcome` (session-id, palvelimen nimi ja versio, sovittu protokollaversio, palvelimen ominaisuuslista, kanavat ja jäsenet) tai `Reject` syineen: liian vanha, liian uusi, kutsu vanhentunut, bannattu, virheellinen identiteetti, palvelin täynnä. Täysi palvelin ei pysäytä clienttiä, vaan se yrittää myöhemmin uudelleen.
+
+Julkinen avain ja sen todiste tulivat pakollisiksi protokollan pääversioon 1 ennen ensimmäistä julkaisua. Avaimettomia M3-vaiheen clienttejä ei ole käytössä, joten pääversiota ei nostettu.
 
 **Ohjausviestit kättelyn jälkeen:** jokaisessa clientin viestissä on `request_id`, ja palvelin vastaa jokaiseen `Response`-viestillä (OK, FORBIDDEN, NOT_FOUND tai INVALID). Pyynnöt ovat `JoinChannel`, `SetVoiceState` (oma mykistys ja kuulokkeiden mykistys) sekä ylläpitäjälle `CreateChannel`, `DeleteChannel`, `RenameChannel`, `MoveMember`, `Kick` ja `Ban`. Palvelin lähettää kaikille tapahtumat `MemberJoined`, `MemberLeft`, `MemberUpdated` (nimi, kanava, mykistys, kuulokkeiden mykistys), `ChannelCreated`, `ChannelDeleted` ja `ChannelRenamed` samassa järjestyksessä kuin se teki muutokset, ja vastaus tulee aina sen aiheuttamien tapahtumien jälkeen. Potku ja banni sulkevat yhteyden QUIC-sovelluskoodilla 1 (potkittu) tai 2 (bannattu), eikä client silloin yhdistä uudelleen itsestään.
 
@@ -140,8 +142,10 @@ Palvelin ei pura ääntä. Se tarkistaa lähettäjän, kirjoittaa sender-kentän
 
 `kuulu-server` on yksi binääri, joka jaetaan myös Docker-imagena (`ghcr.io/<org>/kuulu-server:<versio>`). Käynnistykseen riittää yksi komento ja yksi avoin UDP-portti.
 
-- **Konfiguraatio:** `kuulu.toml`: palvelimen nimi, portti, kanavat (pysyvä id ja nimi; jäsenet liittyvät ensimmäiseen) ja ylläpitäjien julkiset avaimet heksana. Ensimmäinen käynnistys luo oletuskonfiguraation ja tulostaa ylläpitäjän kutsulinkin. Kun ylläpitäjä muuttaa kanavia clientistä, palvelin kirjoittaa tiedoston uudelleen, joten kommentit eivät säily.
-- **Tila:** yhdistetyt sessiot ja kanavat pidetään muistissa. SQLiteen (`kuulu.db`) tallentuvat tunnetut identiteetit, bannit ja kutsut. Roolit tulevat `kuulu.toml`:n ylläpitäjäavaimista.
+- **Konfiguraatio:** `kuulu.toml`: palvelimen nimi, portti, käyttäjien enimmäismäärä (`max_users`, oletus 100), ylläpitäjien julkiset avaimet heksana ja aloituskanavat. Ensimmäinen käynnistys luo oletuskonfiguraation ja tulostaa ylläpitäjän kutsulinkin. Palvelin vain lukee tiedostoa; tyhjä tai virheellinen tiedosto on virhe eikä johda oletusarvoihin.
+- **Kanavat:** `[[channels]]` luo kanavat vain ensimmäisellä käynnistyksellä. Sen jälkeen kanavat ovat SQLitessä, ja ylläpitäjät hallitsevat niitä clientistä; tiedoston kanavien muokkaus ei enää vaikuta. Kanavan id on pysyvä eikä sitä käytetä uudelleen. Jäsenet liittyvät pienimmän id:n kanavaan. Kanavia on enintään 64.
+- **Tila:** yhdistetyt sessiot pidetään muistissa, ja muistissa oleva tila on määräävä. SQLiteen (`kuulu.db`, WAL-tila) tallentuvat kanavat, bannit, kutsut ja tunnetut identiteetit (enintään 10 000 viimeksi nähtyä). Kirjoitukset tehdään omassa säikeessään, joten levy ei koskaan hidasta äänen välitystä. Roolit tulevat `kuulu.toml`:n ylläpitäjäavaimista.
+- **Kokorajat:** `max_users` rajataan niin, että pahimman tapauksen `Welcome` (pisimmät nimet, kaikki kanavat) mahtuu yhteen 64 KiB:n ohjauskehykseen. Raja tarkistetaan käännösaikana, ja se on nyt 374 käyttäjää.
 - **Kutsut:** ylläpitäjä luo kutsun clientistä tai komentoriviltä (`kuulu-server invite --uses 10 --expires 7d`). Kutsulla on satunnainen tunniste, voimassaoloaika ja käyttökertojen enimmäismäärä.
 - **Oikeudet v1:** ylläpitäjä ja jäsen. Ylläpitäjä voi luoda ja poistaa kanavia, siirtää, potkia ja bannata käyttäjiä.
 - **Yksityisyys:** ei äänen tallennusta eikä sisällön lokitusta. Lokeihin kirjataan vain yhteystapahtumat.
@@ -202,7 +206,7 @@ Käyttäjän identiteetti on clientin ensimmäisellä käynnistyksellä luoma ed
 - **Kuljetus:** QUIC ja TLS 1.3. Itse allekirjoitettu palvelinsertifikaatti on sallittu, koska kutsulinkki kantaa sen SHA-256-sormenjäljen ja client kiinnittää sen. Verkkotunnuksellinen palvelin voi käyttää myös Let's Encrypt -sertifikaattia.
 - **Kutsut:** 128-bittinen satunnainen tunniste, voimassaoloaika ja käyttökertojen enimmäismäärä.
 - **Ei päästä päähän -salausta v1:ssä.** Palvelin näkee Opus-paketit, vaikka ei pura eikä tallenna niitä. Tämä kerrotaan käyttäjille avoimesti, ja E2E-salaus on myöhemmän version tavoite.
-- **Väärinkäytön esto:** palvelin rajoittaa jokaisen yhteyden datagrammimäärää (oletus 120 pakettia sekunnissa) ja hylkää paketit, joiden lähettäjä ei kuulu kanavaan.
+- **Väärinkäytön esto:** palvelin rajoittaa jokaisen yhteyden datagrammimäärää (oletus 120 pakettia sekunnissa) ja hylkää paketit, joiden lähettäjä ei kuulu kanavaan. Ohjauspyyntöjä saa lähettää 20 sekunnissa (purske 10); ylittäjän yhteys suljetaan. Samasta IP-osoitteesta hyväksytään 2 uutta yhteyttä sekunnissa (purske 10), ylimääräiset hylätään ennen TLS-kättelyä. Näyttö- ja kanavanimistä poistetaan ohjausmerkit ja näkymättömät muotoilumerkit (Unicode Cf, esim. suunnanvaihtomerkit), ja ne rajataan 32 merkkiin.
 - **Riippuvuudet:** cargo-deny ja cargo-audit ajetaan CI:ssä jokaiselle muutokselle.
 - **Päivitykset** on allekirjoitettu (katso edellinen osio).
 
