@@ -506,6 +506,9 @@ version = "0.0.0"
 dependencies = [
  "assert_no_alloc",
  "kuulu-audio",
+ "kuulu-client",
+ "kuulu-proto",
+ "opus",
 ]
 
 [[package]]

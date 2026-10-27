@@ -8,3 +8,6 @@ publish.workspace = true
 [dependencies]
 assert_no_alloc = "1.1.2"
 kuulu-audio = { path = "../kuulu-audio" }
+kuulu-client = { path = "../kuulu-client" }
+kuulu-proto = { path = "../kuulu-proto" }
+opus = "0.4.0"
