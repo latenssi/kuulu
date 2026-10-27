@@ -1,7 +1,8 @@
-//! Latency measurement, network emulator and loopback tests.
+//! Latency measurement, network emulator, loopback and server load tests.
 
 mod fec;
 mod latency;
+mod load;
 mod loopback;
 
 use std::process::ExitCode;
@@ -17,8 +18,9 @@ fn main() -> ExitCode {
         Some("latency") => latency::run(),
         Some("loopback") => loopback::run(),
         Some("fec-compare") => fec::run(),
+        Some("load") => load::run(),
         _ => {
-            eprintln!("usage: kuulu-bench <latency|loopback|fec-compare>");
+            eprintln!("usage: kuulu-bench <latency|loopback|fec-compare|load>");
             ExitCode::from(2)
         }
     }

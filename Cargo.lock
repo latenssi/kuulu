@@ -2445,6 +2445,7 @@ dependencies = [
  "kuulu-proto",
  "opus",
  "opusic-sys",
+ "tokio",
 ]
 
 [[package]]
