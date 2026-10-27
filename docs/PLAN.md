@@ -245,10 +245,10 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 
 ### M3 – Palvelin ja verkko
 
-- [ ] kuulu-proto: protobuf-viestit, pakettiotsake ja versiot
-- [ ] kuulu-server: QUIC, kättely, yksi kanava ja datagrammien välitys
-- [ ] kuulu-client: yhteys, sessio ja uudelleenyhdistys
-- [ ] Verkkoemulaattori ja häviöprofiilit
+- [x] kuulu-proto: protobuf-viestit, pakettiotsake ja versiot
+- [x] kuulu-server: QUIC, kättely, yksi kanava ja datagrammien välitys
+- [x] kuulu-client: yhteys, sessio ja uudelleenyhdistys
+- [x] Verkkoemulaattori ja häviöprofiilit
 - [ ] Mittaus: redundanssi vai Opus FEC; päätös kirjataan tähän dokumenttiin
 
 **Valmis kun:** kaksi headless-clienttiä puhuu palvelimen kautta, ja kotiyhteysprofiililla puhe pysyy ymmärrettävänä jitter bufferin pysyessä enintään kahdessa kehyksessä.
