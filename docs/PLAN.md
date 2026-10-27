@@ -236,19 +236,19 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 
 ### M2 – Ääniputki paikallisesti
 
-- [ ] kuulu-audio: capture, kehystys, Opus, jitter buffer, miksaus ja playback
-- [ ] Komento `kuulu-bench loopback`: mikrofoni → putki → kaiuttimet ilman verkkoa
-- [ ] Viivetesti simuloidulla kellolla
-- [ ] assert\_no\_alloc äänicallbackeihin debug-buildeissa
+- [x] kuulu-audio: capture, kehystys, Opus, jitter buffer, miksaus ja playback
+- [x] Komento `kuulu-bench loopback`: mikrofoni → putki → kaiuttimet ilman verkkoa
+- [x] Viivetesti simuloidulla kellolla
+- [x] assert\_no\_alloc äänicallbackeihin debug-buildeissa
 
 **Valmis kun:** viive ilman verkkoa on enintään 32,5 ms, ja 10 minuutin ajo sujuu ilman katkoja tai rätinää.
 
 ### M3 – Palvelin ja verkko
 
-- [ ] kuulu-proto: protobuf-viestit, pakettiotsake ja versiot
-- [ ] kuulu-server: QUIC, kättely, yksi kanava ja datagrammien välitys
-- [ ] kuulu-client: yhteys, sessio ja uudelleenyhdistys
-- [ ] Verkkoemulaattori ja häviöprofiilit
+- [x] kuulu-proto: protobuf-viestit, pakettiotsake ja versiot
+- [x] kuulu-server: QUIC, kättely, yksi kanava ja datagrammien välitys
+- [x] kuulu-client: yhteys, sessio ja uudelleenyhdistys
+- [x] Verkkoemulaattori ja häviöprofiilit
 - [ ] Mittaus: redundanssi vai Opus FEC; päätös kirjataan tähän dokumenttiin
 
 **Valmis kun:** kaksi headless-clienttiä puhuu palvelimen kautta, ja kotiyhteysprofiililla puhe pysyy ymmärrettävänä jitter bufferin pysyessä enintään kahdessa kehyksessä.

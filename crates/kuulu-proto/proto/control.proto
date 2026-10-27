@@ -1,0 +1,65 @@
+// Control messages, sent length-prefixed on the single bidirectional stream.
+syntax = "proto3";
+
+package kuulu.control;
+
+// Everything the client sends on the control stream.
+message ClientMessage {
+  oneof msg {
+    Hello hello = 1;
+  }
+}
+
+// Everything the server sends on the control stream.
+message ServerMessage {
+  oneof msg {
+    Welcome welcome = 1;
+    Reject reject = 2;
+  }
+}
+
+message Hello {
+  // Newest protocol major version the client speaks.
+  uint32 protocol_version = 1;
+  // Oldest protocol major version the client speaks.
+  uint32 min_protocol_version = 2;
+  // Client application version, e.g. "0.1.0".
+  string app_version = 3;
+  // Capabilities for additions within a major version.
+  repeated string features = 4;
+  // Ed25519 identity key; empty until identities exist (M5).
+  bytes public_key = 5;
+  // Invite token; not checked until invites exist (M4/M5).
+  string invite = 6;
+}
+
+message Welcome {
+  // Session id the server writes into the sender field of forwarded packets.
+  uint32 session_id = 1;
+  // Server application version.
+  string server_version = 2;
+  repeated Channel channels = 3;
+}
+
+message Channel {
+  uint32 id = 1;
+  string name = 2;
+  repeated Member members = 3;
+}
+
+message Member {
+  uint32 session_id = 1;
+}
+
+message Reject {
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    // The client's newest protocol version is older than the server supports.
+    TOO_OLD = 1;
+    // The client's oldest protocol version is newer than the server supports.
+    TOO_NEW = 2;
+    INVITE_EXPIRED = 3;
+    BANNED = 4;
+  }
+  Reason reason = 1;
+}
