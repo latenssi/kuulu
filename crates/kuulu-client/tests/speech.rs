@@ -49,9 +49,9 @@ async fn speech_stays_intelligible_over_home_network() {
         run.stalls,
         run.max_stall
     );
-    // Buffering stays within two frames on average. Two hops of ±5 ms make
-    // ±10 ms end to end; with 10 ms playout steps the target can reach 3.
-    assert!(run.mean_depth <= 2.0 && run.max_target <= 3, "{run:?}");
+    // PLAN.md: the jitter buffer stays at most two frames. (Two hops of
+    // ±5 ms make ±10 ms end to end, so the target can occasionally need 3.)
+    assert!(run.max_target <= 2 && run.p95_depth <= 2, "{run:?}");
     assert!(played as usize >= SECONDS * 95, "{stats:?}");
     assert!(concealed < 0.03, "{stats:?}");
     assert!(quality.snr_db > 10.0 && quality.poor < 0.05, "{quality:?}");
