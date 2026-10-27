@@ -2,16 +2,18 @@
 //! is broadcast to all members, and sent to the store, while the lock is
 //! held, so all clients and the database see changes in the same order.
 
+use crate::invite;
 use crate::store::{Loaded, Op, Store};
 use bytes::Bytes;
 use kuulu_proto::close;
 use kuulu_proto::control::{
-    self, ChannelDeleted, MemberLeft, ServerMessage, Welcome, client_message::Msg, reject::Reason,
-    response::Status, server_message,
+    self, ChannelDeleted, MemberLeft, Response, ServerMessage, Welcome, client_message::Msg,
+    reject::Reason, response::Status, server_message,
 };
 use kuulu_proto::frame::MAX_FRAME_LEN;
 use kuulu_proto::identity::PublicKey;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Longest display, channel or server name, in characters.
@@ -25,8 +27,9 @@ pub(crate) const MAX_CHANNELS: usize = 64;
 // 2-byte length, and a nested message adds a tag and a length varint.
 const NAME_FIELD: usize = 1 + 2 + 4 * MAX_NAME;
 const U32_FIELD: usize = 1 + 5;
-/// session_id, display_name, channel_id, self_mute, self_deaf; wrapped in Channel.
-const MEMBER_BOUND: usize = 1 + 2 + (U32_FIELD + NAME_FIELD + U32_FIELD + 2 + 2);
+/// session_id, display_name, channel_id, self_mute, self_deaf, admin;
+/// wrapped in Channel.
+const MEMBER_BOUND: usize = 1 + 2 + (U32_FIELD + NAME_FIELD + U32_FIELD + 2 + 2 + 2);
 /// id and name, wrapped in Welcome with up to a 3-byte length (2 MiB).
 const CHANNEL_BOUND: usize = 1 + 3 + (U32_FIELD + NAME_FIELD);
 /// ServerMessage wrapper, session_id, server_name, protocol_version, plus
@@ -45,6 +48,7 @@ pub(crate) struct State {
     next_channel_id: u64,
     members: HashMap<u32, Member>,
     max_users: usize,
+    /// From `kuulu.toml` and bootstrap admin invites.
     admins: HashSet<PublicKey>,
     banned: HashSet<PublicKey>,
     store: Store,
@@ -61,6 +65,7 @@ pub(crate) struct Member {
     /// Also set while deafened.
     mute: bool,
     deaf: bool,
+    admin: bool,
 }
 
 impl Member {
@@ -78,6 +83,7 @@ impl Member {
             channel: 0,
             mute: false,
             deaf: false,
+            admin: false,
         }
     }
 
@@ -88,12 +94,19 @@ impl Member {
             channel_id: self.channel,
             self_mute: self.mute,
             self_deaf: self.deaf,
+            admin: self.admin,
         }
     }
 }
 
 impl State {
-    pub fn new(loaded: Loaded, max_users: usize, admins: HashSet<PublicKey>, store: Store) -> Self {
+    pub fn new(
+        loaded: Loaded,
+        max_users: usize,
+        mut admins: HashSet<PublicKey>,
+        store: Store,
+    ) -> Self {
+        admins.extend(loaded.admins);
         Self {
             last_session_id: 0,
             channels: loaded
@@ -121,6 +134,7 @@ impl State {
         }
         let id = self.next_session_id();
         member.channel = self.first_channel();
+        member.admin = self.is_admin(&member.key);
         self.store.write(Op::Seen(member.key, member.name.clone()));
         self.broadcast(server_message::Msg::MemberJoined(member.to_proto(id)));
         self.members.insert(id, member);
@@ -140,6 +154,37 @@ impl State {
             .control
             .try_send(ServerMessage { msg: Some(welcome) });
         Ok(id)
+    }
+
+    pub fn is_admin(&self, key: &PublicKey) -> bool {
+        self.admins.contains(key)
+    }
+
+    pub fn no_admins(&self) -> bool {
+        self.admins.is_empty()
+    }
+
+    pub fn is_banned(&self, key: &PublicKey) -> bool {
+        self.banned.contains(key)
+    }
+
+    /// Makes `key` an admin, announcing it for sessions already connected.
+    pub fn grant_admin(&mut self, key: PublicKey) {
+        if !self.admins.insert(key) {
+            return;
+        }
+        let ids: Vec<u32> = self
+            .members
+            .iter_mut()
+            .filter(|(_, m)| m.key == key)
+            .map(|(&id, m)| {
+                m.admin = true;
+                id
+            })
+            .collect();
+        for id in ids {
+            self.updated(id);
+        }
     }
 
     pub fn leave(&mut self, id: u32) {
@@ -168,8 +213,9 @@ impl State {
     }
 
     /// Applies a request from member `from`. Admin requests are authorised here.
-    pub fn handle(&mut self, from: u32, msg: Msg) -> Result<(), Status> {
-        let admin = self.admins.contains(&self.member(from)?.key);
+    pub fn handle(&mut self, from: u32, msg: Msg) -> Result<Response, Status> {
+        let admin = self.member(from)?.admin;
+        let mut response = Response::default();
         match msg {
             Msg::JoinChannel(m) => self.move_member(from, m.channel_id),
             Msg::SetVoiceState(m) => {
@@ -243,8 +289,17 @@ impl State {
                 }
                 Ok(())
             }
+            Msg::CreateInvite(m) => {
+                let expires = Duration::from_secs(m.expires_in_secs.into());
+                let (token, invite) =
+                    invite::new(m.uses, expires, false).map_err(|_| Status::Invalid)?;
+                self.store.write(Op::CreateInvite(invite));
+                response.invite = token;
+                Ok(())
+            }
             Msg::Hello(_) => Err(Status::Invalid),
-        }
+        }?;
+        Ok(response)
     }
 
     fn move_member(&mut self, id: u32, channel: u32) -> Result<(), Status> {
@@ -374,6 +429,7 @@ mod tests {
             channel_id: u32::MAX,
             self_mute: true,
             self_deaf: true,
+            admin: true,
         };
         let mut channels: Vec<_> = (0..MAX_CHANNELS)
             .map(|i| control::Channel {
@@ -398,7 +454,7 @@ mod tests {
         let len = kuulu_proto::frame::encode(&msg).len() - 4;
         assert!(len <= MAX_FRAME_LEN, "{len}");
         // PLAN.md quotes this number.
-        assert_eq!(MAX_USERS, 374);
+        assert_eq!(MAX_USERS, 369);
         // The bound is tight enough to be useful.
         assert!(len > MAX_FRAME_LEN - 512 - MEMBER_BOUND, "{len}");
     }

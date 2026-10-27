@@ -17,6 +17,8 @@ use std::{fs, io::ErrorKind};
 pub struct Config {
     pub name: String,
     pub port: u16,
+    /// Host name or IP address clients reach the server at, for invite links.
+    pub public_host: String,
     /// Most simultaneous users; clamped to what a Welcome can describe.
     pub max_users: usize,
     /// Hex Ed25519 public keys of administrators.
@@ -37,6 +39,7 @@ impl Default for Config {
         Self {
             name: "Kuulu".into(),
             port: kuulu_proto::DEFAULT_PORT,
+            public_host: String::new(),
             // The plan's sizing target: 100 users on one vCPU.
             max_users: 100,
             admins: Vec::new(),
@@ -53,6 +56,8 @@ const DEFAULT_FILE: &str = r#"# Kuulu server configuration. The server never wri
 
 name = "Kuulu"
 port = 7700
+# Host name or IP address in invite links, e.g. "voice.example.com".
+public_host = ""
 # Most simultaneous users.
 max_users = 100
 # Hex Ed25519 public keys of administrators, e.g. ["3b6a27bc..."].
