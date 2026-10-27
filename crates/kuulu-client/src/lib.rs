@@ -49,7 +49,9 @@ pub enum Error {
 }
 
 impl Error {
-    fn is_fatal(&self) -> bool {
+    /// Whether retrying cannot help. Connected clients stop on these;
+    /// others (transport failures, a full server) are worth retrying.
+    pub fn is_fatal(&self) -> bool {
         // A full server may have room later.
         !matches!(
             self,
@@ -71,7 +73,12 @@ impl fmt::Display for Error {
                 f,
                 "the server runs an older version of Kuulu; ask its admin to update it"
             ),
-            Self::Rejected(Reason::InviteExpired) => write!(f, "the invite has expired"),
+            Self::Rejected(Reason::InviteExpired) => {
+                write!(
+                    f,
+                    "the invite has expired or is not valid; ask for a new one"
+                )
+            }
             Self::Rejected(Reason::Banned) => write!(f, "you are banned from this server"),
             Self::Rejected(Reason::InvalidIdentity) => {
                 write!(f, "the server could not verify your identity key")
@@ -128,6 +135,11 @@ pub enum Request {
     Kick(u32),
     /// Bans the member's identity key and disconnects it.
     Ban(u32),
+    /// Use [`Client::create_invite`], which returns the token.
+    CreateInvite {
+        uses: u32,
+        expires_in_secs: u32,
+    },
 }
 
 impl Request {
@@ -150,6 +162,13 @@ impl Request {
             }),
             Self::Kick(session_id) => Msg::Kick(control::Kick { session_id }),
             Self::Ban(session_id) => Msg::Ban(control::Ban { session_id }),
+            Self::CreateInvite {
+                uses,
+                expires_in_secs,
+            } => Msg::CreateInvite(control::CreateInvite {
+                uses,
+                expires_in_secs,
+            }),
         }
     }
 }
@@ -199,9 +218,14 @@ impl Client {
     }
 
     /// Connects to `addr` as `key`, trusting only the certificate with this
-    /// SHA-256 `fingerprint` (hex), and completes the handshake, presenting
-    /// the `invite` token if any. Any failure here is returned; once
-    /// connected, lost connections are retried with backoff.
+    /// SHA-256 `fingerprint` (hex), and completes the handshake. Any failure
+    /// here is returned; once connected, lost connections are retried with
+    /// backoff.
+    ///
+    /// `invite` is the token from an invite link (`t=`). A key the server
+    /// does not know yet needs one; without it the server rejects with
+    /// [`Reason::InviteExpired`]. Once joined, the key is known and later
+    /// connects need no invite.
     pub async fn connect_as(
         addr: SocketAddr,
         fingerprint: &str,
@@ -290,6 +314,29 @@ impl Client {
     /// Asks the server for a change and waits for its answer. The resulting
     /// state change arrives as an event before this returns.
     pub async fn request(&self, request: Request) -> Result<(), RequestError> {
+        self.ask(request).await.map(|_| ())
+    }
+
+    /// Creates an invite usable `uses` times within `expires` (admin only)
+    /// and returns its token. The link is
+    /// `kuulu://<host>:<port>/join?t=<token>&fp=<fingerprint>` with the
+    /// address and fingerprint this client connected with.
+    pub async fn create_invite(
+        &self,
+        uses: u32,
+        expires: Duration,
+    ) -> Result<String, RequestError> {
+        let expires_in_secs =
+            u32::try_from(expires.as_secs()).map_err(|_| RequestError::Invalid)?;
+        self.ask(Request::CreateInvite {
+            uses,
+            expires_in_secs,
+        })
+        .await
+    }
+
+    /// Sends `request`; the answer's invite token on success.
+    async fn ask(&self, request: Request) -> Result<String, RequestError> {
         let (reply, answer) = oneshot::channel();
         self.requests
             .send((request, reply))

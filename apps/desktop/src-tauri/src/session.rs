@@ -20,6 +20,10 @@ use tokio::sync::broadcast::error::RecvError;
 /// How often RTT and audio stats are refreshed in the UI.
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Invites made from the client, as in the plan's CLI example.
+const INVITE_USES: u32 = 10;
+const INVITE_EXPIRES: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
 /// Per-sender volume, percent.
 const DEFAULT_VOLUME: u8 = 100;
 pub const MAX_VOLUME: u8 = 200;
@@ -33,9 +37,12 @@ pub enum Phase {
     Connected,
     /// Connection lost; the client retries by itself.
     Reconnecting,
-    /// Gave up (refused, kicked, banned, unreachable). `reason` is for the user.
+    /// Gave up (refused, kicked, banned, unreachable). `reason` is for the
+    /// user; `retryable` when trying again later may work (e.g. the server
+    /// was full or unreachable).
     Failed {
         reason: String,
+        retryable: bool,
     },
 }
 
@@ -47,6 +54,17 @@ impl Phase {
             (Phase::Connected, Event::Disconnected) => Phase::Reconnecting,
             _ => self.clone(),
         }
+    }
+
+    fn failed(reason: impl Into<String>, retryable: bool) -> Phase {
+        Phase::Failed {
+            reason: reason.into(),
+            retryable,
+        }
+    }
+
+    fn client_failed(e: &kuulu_client::Error) -> Phase {
+        Phase::failed(capitalize(&format!("{e}.")), !e.is_fatal())
     }
 
     fn in_call(&self) -> bool {
@@ -145,12 +163,9 @@ impl From<AdminAction> for Request {
     }
 }
 
-/// Whether we may administer the server. The one place that decides it.
-// TODO(m5-invites): the board approved `Member.admin`; once it lands, return
-// `state.me().is_some_and(|m| m.admin)`. Until then everyone sees the
-// actions and members get "only admins can do that".
-fn is_admin(_state: &ServerState) -> bool {
-    true
+/// Whether to offer admin actions. The server still checks every request.
+fn is_admin(state: &ServerState) -> bool {
+    state.me().is_some_and(|m| m.admin)
 }
 
 /// State the UI changes locally, kept across reconnects.
@@ -366,14 +381,16 @@ impl Session {
         }
         let client = match result {
             Ok(client) => Arc::new(client),
-            Err(reason) => {
-                self.set_phase(
-                    &mut inner,
-                    Phase::Failed {
-                        reason: reason.clone(),
-                    },
-                );
+            Err(failed) => {
+                let reason = match &failed {
+                    Phase::Failed { reason, .. } => reason.clone(),
+                    _ => unreachable!("connect fails with Phase::Failed"),
+                };
+                self.set_phase(&mut inner, failed);
+                // Keep the link at hand for trying again.
+                inner.pending_invite = Some(link.trim().into());
                 drop(inner);
+                let _ = self.app.emit("invite", link.trim());
                 self.emit();
                 return Err(reason);
             }
@@ -395,20 +412,23 @@ impl Session {
         Ok(())
     }
 
-    async fn connect(&self, invite: &Invite, name: &str) -> Result<Client, String> {
+    /// Fails with [`Phase::Failed`].
+    async fn connect(&self, invite: &Invite, name: &str) -> Result<Client, Phase> {
         let key = self.lock().identity.clone();
         let key = match key {
             Some(key) => key,
             // The keyring may block on D-Bus or a system prompt.
             None => tauri::async_runtime::spawn_blocking(identity::load_or_create)
                 .await
-                .map_err(|e| e.to_string())??,
+                .map_err(|e| e.to_string())
+                .and_then(|r| r)
+                .map_err(|e| Phase::failed(e, false))?,
         };
         self.lock().identity = Some(key.clone());
-        let addr = invite.resolve().await?;
+        let addr = invite.resolve().await.map_err(|e| Phase::failed(e, true))?;
         Client::connect_as(addr, &invite.fingerprint, &key, name, Some(&invite.token))
             .await
-            .map_err(|e| capitalize(&e.to_string()))
+            .map_err(|e| Phase::client_failed(&e))
     }
 
     pub fn leave(&self) {
@@ -532,12 +552,29 @@ impl Session {
 
     /// Sends a request; the change itself arrives as an event.
     pub async fn request(&self, request: Request) -> Result<(), String> {
-        let client = self.lock().call.as_ref().map(|c| c.client.clone());
-        let client = client.ok_or("Not connected.")?;
-        client
-            .request(request)
+        let client = self.client()?;
+        client.request(request).await.map_err(request_failed)
+    }
+
+    /// Creates an invite (admin only) and returns its link.
+    pub async fn create_invite(&self) -> Result<String, String> {
+        let client = self.client()?;
+        let token = client
+            .create_invite(INVITE_USES, INVITE_EXPIRES)
             .await
-            .map_err(|e| capitalize(&format!("{e}.")))
+            .map_err(request_failed)?;
+        let inner = self.lock();
+        let call = inner.call.as_ref().ok_or("Not connected.")?;
+        Ok(Invite {
+            token,
+            ..call.invite.clone()
+        }
+        .link())
+    }
+
+    fn client(&self) -> Result<Arc<Client>, String> {
+        let client = self.lock().call.as_ref().map(|c| c.client.clone());
+        client.ok_or_else(|| "Not connected.".into())
     }
 
     fn on_event(&self, event: &Event) {
@@ -549,11 +586,11 @@ impl Session {
         }
     }
 
-    fn on_stopped(&self, reason: String) {
+    fn on_stopped(&self, e: &kuulu_client::Error) {
         let mut inner = self.lock();
         inner.call = None;
         inner.audio = None;
-        self.set_phase(&mut inner, Phase::Failed { reason });
+        self.set_phase(&mut inner, Phase::client_failed(e));
         drop(inner);
         ptt::unregister(&self.app);
     }
@@ -574,7 +611,7 @@ async fn watch(app: AppHandle, client: Arc<Client>) {
                 Err(RecvError::Closed) => return,
             },
             e = client.stopped() => {
-                session.on_stopped(capitalize(&e.to_string()));
+                session.on_stopped(&e);
                 session.emit();
                 return;
             }
@@ -582,6 +619,10 @@ async fn watch(app: AppHandle, client: Arc<Client>) {
         }
         session.emit();
     }
+}
+
+fn request_failed(e: kuulu_client::RequestError) -> String {
+    capitalize(&format!("{e}."))
 }
 
 fn capitalize(s: &str) -> String {
@@ -604,6 +645,7 @@ mod tests {
             channel_id: channel,
             self_mute: false,
             self_deaf: false,
+            admin: false,
         }
     }
 
@@ -649,9 +691,7 @@ mod tests {
         );
         // Late events from an old call do not revive it.
         assert_eq!(Idle.on(&Event::Connected), Idle);
-        let failed = Failed {
-            reason: "kicked".into(),
-        };
+        let failed = Phase::failed("kicked", false);
         assert_eq!(failed.on(&Event::Connected), failed);
         assert!(Reconnecting.in_call() && !Connecting.in_call() && !failed.in_call());
     }
@@ -686,6 +726,20 @@ mod tests {
         assert!(raid.members[1].speaking, "our open gate shows as speaking");
         assert!(snap.channels[0].members[0].muted);
         assert_eq!(snap.latency.total_ms, 43.5 - 11.0 + 11.0);
+        assert!(!snap.admin);
+
+        let mut state = state;
+        state.members.get_mut(&2).unwrap().admin = true;
+        let snap = snapshot(
+            &Phase::Connected,
+            Some((&state, &invite)),
+            &local,
+            &Settings::default(),
+            None,
+            None,
+            false,
+        );
+        assert!(snap.admin);
     }
 
     #[test]

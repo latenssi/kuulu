@@ -32,6 +32,16 @@
 
   const admin = (action: AdminAction) => run(api.admin(action))
 
+  let copied = $state(false)
+  const copyInvite = () =>
+    run(
+      api.createInvite().then(async (link) => {
+        await navigator.clipboard.writeText(link)
+        copied = true
+        setTimeout(() => (copied = false), 3000)
+      }),
+    )
+
   function status(m: Member) {
     if (m.deafened) return 'Deafened'
     if (m.muted) return 'Muted'
@@ -117,7 +127,12 @@
         <input type="text" placeholder="New channel" maxlength="32" bind:value={newChannel} />
       </form>
     {/if}
-    <p class="mono foot">No account needed · double-click a channel to rename it</p>
+    <div class="foot">
+      {#if snap.admin}
+        <button onclick={copyInvite}>{copied ? 'Link copied' : 'Copy invite link'}</button>
+        <p class="mono">No account needed · link works 10 times in 7 days · double-click a channel to rename it</p>
+      {/if}
+    </div>
   </aside>
 
   <main>

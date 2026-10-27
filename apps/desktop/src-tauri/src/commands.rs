@@ -47,6 +47,12 @@ pub async fn admin(session: State<'_, Session>, action: AdminAction) -> Result<(
     session.request(action.into()).await
 }
 
+/// Creates an invite (admin only), returning its link.
+#[tauri::command]
+pub async fn create_invite(session: State<'_, Session>) -> Result<String> {
+    session.create_invite().await
+}
+
 #[tauri::command]
 pub fn set_muted(session: State<Session>, muted: bool) {
     session.set_muted(muted);

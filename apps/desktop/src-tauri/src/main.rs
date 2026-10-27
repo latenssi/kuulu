@@ -37,6 +37,7 @@ fn main() {
             commands::leave,
             commands::join_channel,
             commands::admin,
+            commands::create_invite,
             commands::set_muted,
             commands::set_deafened,
             commands::set_volume,

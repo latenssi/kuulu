@@ -118,7 +118,7 @@
 
     <div class="actions">
       <button class="primary" disabled={!address || !prefs?.display_name.trim() || connecting}>
-        {connecting ? 'Connecting…' : 'Join voice'}
+        {connecting ? 'Connecting…' : snap.phase.kind === 'failed' && snap.phase.retryable ? 'Try again' : 'Join voice'}
         <Icon name="forward" size={18} />
       </button>
       {#if onCancel}

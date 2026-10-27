@@ -2,6 +2,7 @@
 //! within a channel.
 
 mod config;
+pub mod invite;
 mod rate_limit;
 mod state;
 mod store;
@@ -23,7 +24,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{error::Error, io};
-use store::Store;
+use store::{Admission, Store};
 use tokio::sync::mpsc;
 
 /// Datagrams per second a connection may send before the excess is dropped.
@@ -51,6 +52,9 @@ pub struct Server {
     endpoint: quinn::Endpoint,
     shared: Arc<Shared>,
     fingerprint: String,
+    public_host: String,
+    /// Token of the bootstrap admin invite, made when there is no admin.
+    admin_invite: Option<String>,
 }
 
 struct Shared {
@@ -59,11 +63,17 @@ struct Shared {
     /// Held only briefly and never across I/O: voice forwarding takes it per packet.
     state: Mutex<State>,
     store: Store,
+    /// Unknown keys need an invite to join.
+    invites_required: bool,
 }
 
+/// Lifetime of the bootstrap admin invite; a restart makes a new one.
+const ADMIN_INVITE_TTL: Duration = Duration::from_secs(24 * 3600);
+
 impl Server {
-    /// A server with the default configuration that persists nothing, for
-    /// tests and benchmarks. Call [`Server::run`] to start accepting.
+    /// A server with the default configuration that persists nothing and
+    /// admits everyone without an invite, for tests and benchmarks. Call
+    /// [`Server::run`] to start accepting.
     pub fn bind(addr: SocketAddr, identity: &Identity) -> io::Result<Self> {
         Self::start(addr, identity, &Config::default(), None)
     }
@@ -96,7 +106,15 @@ impl Server {
             eprintln!("max_users {} lowered to {MAX_USERS}", config.max_users);
         }
         let max_users = config.max_users.min(MAX_USERS);
-        let (store, loaded) = Store::open(dir, &seed)?;
+        let (store, loaded) = Store::open(dir, &seed, !admins.is_empty())?;
+        let invites_required = dir.is_some();
+        // No admin anywhere: the first to use this invite becomes one.
+        let admin_invite = (invites_required && admins.is_empty() && loaded.admins.is_empty())
+            .then(|| {
+                let (token, invite) = invite::new(1, ADMIN_INVITE_TTL, true).expect("valid");
+                store.write(store::Op::CreateInvite(invite));
+                token
+            });
         let state = State::new(loaded, max_users, admins, store.clone());
 
         let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
@@ -120,8 +138,11 @@ impl Server {
                 name: clean_name(&config.name),
                 state: Mutex::new(state),
                 store,
+                invites_required,
             }),
             fingerprint: identity.fingerprint(),
+            public_host: config.public_host.clone(),
+            admin_invite,
         })
     }
 
@@ -132,6 +153,31 @@ impl Server {
     /// SHA-256 of the certificate, which clients pin.
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
+    }
+
+    /// The bootstrap admin invite token, if this start made one: there was
+    /// no admin in `kuulu.toml` or `kuulu.db`.
+    pub fn admin_invite(&self) -> Option<&str> {
+        self.admin_invite.as_deref()
+    }
+
+    /// Creates an invite usable `uses` times within `expires`; returns its
+    /// token. `kuulu-server invite` does the same from another process.
+    pub fn create_invite(&self, uses: u32, expires: Duration) -> io::Result<String> {
+        let (token, invite) = invite::new(uses, expires, false)?;
+        self.shared.store.write(store::Op::CreateInvite(invite));
+        Ok(token)
+    }
+
+    /// The link for invite `token`, with `public_host` from `kuulu.toml`
+    /// (or `<host>` when unset) and the listening port.
+    pub fn invite_link(&self, token: &str) -> io::Result<String> {
+        let host = match self.public_host.as_str() {
+            "" => "<host>",
+            host => host,
+        };
+        let port = self.local_addr()?.port();
+        Ok(invite::link(host, port, token, &self.fingerprint))
     }
 
     /// Disconnects everyone at once, so clients reconnect right away instead
@@ -182,7 +228,6 @@ async fn serve(incoming: quinn::Incoming, shared: Arc<Shared>) -> Result<(), Box
         return Err("expected Hello".into());
     };
 
-    // Invites are not checked until they exist (M5).
     let protocol_version = match kuulu_proto::negotiate(&hello) {
         Ok(v) => v,
         Err(reason) => return reject(send, reason).await,
@@ -190,6 +235,32 @@ async fn serve(incoming: quinn::Incoming, shared: Arc<Shared>) -> Result<(), Box
     let Some(key) = identity::verify(&conn, &hello.public_key, &hello.identity_proof) else {
         return reject(send, Reason::InvalidIdentity).await;
     };
+    // Admins need no invite, so a pruned admin identity can still join.
+    // Banned keys are refused first, so they never use up an invite.
+    let (admin, banned, no_admins) = {
+        let state = shared.state.lock().unwrap();
+        (
+            state.is_admin(&key),
+            state.is_banned(&key),
+            state.no_admins(),
+        )
+    };
+    if banned {
+        return reject(send, Reason::Banned).await;
+    }
+    if shared.invites_required && !admin {
+        match shared.store.admit(key, &hello.invite, no_admins).await {
+            Admission::Refused => return reject(send, Reason::InviteExpired).await,
+            Admission::Member => {}
+            Admission::Admin => {
+                shared.state.lock().unwrap().grant_admin(key);
+                println!(
+                    "{} is now an admin (bootstrap invite); its key is kept in kuulu.db",
+                    identity::to_hex(&key)
+                );
+            }
+        }
+    }
     let (control, mut outbox) = mpsc::channel(CONTROL_QUEUE);
     let member = Member::new(conn.clone(), control.clone(), key, &hello.display_name);
     let welcome = Welcome {
@@ -223,14 +294,16 @@ async fn serve(incoming: quinn::Incoming, shared: Arc<Shared>) -> Result<(), Box
                 return Err("too many requests".into());
             }
             // Unknown requests from newer clients get INVALID, not silence.
-            let status = match msg.msg {
-                Some(msg) => session.handle(msg).err().unwrap_or(Status::Ok),
-                None => Status::Invalid,
-            };
-            let response = server_message::Msg::Response(Response {
-                request_id: msg.request_id,
+            let mut response = match msg.msg {
+                Some(msg) => session.handle(msg),
+                None => Err(Status::Invalid),
+            }
+            .unwrap_or_else(|status| Response {
                 status: status.into(),
+                ..Default::default()
             });
+            response.request_id = msg.request_id;
+            let response = server_message::Msg::Response(response);
             // A client that does not read its responses is stalled, like one
             // that does not read events.
             if control
@@ -272,7 +345,7 @@ struct Session {
 }
 
 impl Session {
-    fn handle(&self, msg: client_message::Msg) -> Result<(), Status> {
+    fn handle(&self, msg: client_message::Msg) -> Result<Response, Status> {
         self.shared.state.lock().unwrap().handle(self.id, msg)
     }
 

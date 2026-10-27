@@ -11,7 +11,7 @@ export type Phase =
   | { kind: 'connecting' }
   | { kind: 'connected' }
   | { kind: 'reconnecting' }
-  | { kind: 'failed'; reason: string }
+  | { kind: 'failed'; reason: string; retryable: boolean }
 
 export interface Member {
   id: number
@@ -79,6 +79,7 @@ export const api = {
   leave: () => invoke<void>('leave'),
   joinChannel: (channelId: number) => invoke<void>('join_channel', { channelId }),
   admin: (action: AdminAction) => invoke<void>('admin', { action }),
+  createInvite: () => invoke<string>('create_invite'),
   setMuted: (muted: boolean) => invoke<void>('set_muted', { muted }),
   setDeafened: (deafened: boolean) => invoke<void>('set_deafened', { deafened }),
   setVolume: (sessionId: number, percent: number) =>

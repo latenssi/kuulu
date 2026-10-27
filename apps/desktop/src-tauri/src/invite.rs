@@ -67,6 +67,15 @@ impl Invite {
         }
     }
 
+    /// The `kuulu://` link for this invite.
+    pub fn link(&self) -> String {
+        let mut url = Url::parse(&format!("kuulu://{}/join", self.address())).expect("valid host");
+        url.query_pairs_mut()
+            .append_pair("t", &self.token)
+            .append_pair("fp", &self.fingerprint);
+        url.into()
+    }
+
     /// Looks up the server address.
     pub async fn resolve(&self) -> Result<SocketAddr, String> {
         tokio::net::lookup_host((self.host.as_str(), self.port))
@@ -108,6 +117,16 @@ mod tests {
         let v6 = Invite::parse(&format!("kuulu://[::1]:7700/join?t=x&fp={FP}")).unwrap();
         assert_eq!(v6.host, "::1");
         assert_eq!(v6.address(), "[::1]:7700");
+
+        for invite in [invite, https, v6] {
+            assert_eq!(Invite::parse(&invite.link()).unwrap(), invite);
+        }
+        assert_eq!(
+            Invite::parse(&format!("kuulu://h:1/join?t=x&fp={FP}"))
+                .unwrap()
+                .link(),
+            format!("kuulu://h:1/join?t=x&fp={}", FP.to_ascii_lowercase())
+        );
     }
 
     #[test]

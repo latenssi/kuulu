@@ -2531,6 +2531,7 @@ dependencies = [
  "kuulu-proto",
  "quinn",
  "rcgen",
+ "ring",
  "rusqlite",
  "serde",
  "tokio",
