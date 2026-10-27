@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 prost = "0.14"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+ring = "0.17"
 tokio = { version = "1", features = ["io-util"] }
 
 [build-dependencies]

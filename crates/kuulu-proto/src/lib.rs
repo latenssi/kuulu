@@ -19,6 +19,16 @@ pub mod control {
 /// Default server UDP port.
 pub const DEFAULT_PORT: u16 = 7700;
 
+/// SHA-256 of a DER certificate as lowercase hex: what invite links carry and
+/// clients pin, since servers use self-signed certificates.
+pub fn cert_fingerprint(cert_der: &[u8]) -> String {
+    ring::digest::digest(&ring::digest::SHA256, cert_der)
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// QUIC transport settings shared by client and server.
 ///
 /// Stale audio is worse than lost audio: the datagram buffers hold about one
