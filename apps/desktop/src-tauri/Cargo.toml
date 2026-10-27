@@ -1,0 +1,18 @@
+[package]
+name = "kuulu-desktop"
+description = "Kuulu desktop client"
+# The app version shown to users and the updater comes from ../package.json
+# (see tauri.conf.json); the release workflow sets it from the git tag.
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-updater = "2"
+# Required by tauri::generate_context! when plugin config is present.
+serde_json = "1"

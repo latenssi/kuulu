@@ -75,11 +75,14 @@ Budjetti on 43,5 ms suusta korvaan, kun verkon yhdensuuntainen viive on 11 ms (R
 | Vaihe | Viive (ms) | Miten |
 | --- | --- | --- |
 | Capture-puskuri | 5 | 240 näytettä, 48 kHz |
-| Opus-koodaus | 12,5 | 10 ms kehys + 2,5 ms look-ahead (low-delay-tila) |
+| Kehystys | 5 | 10 ms kehys; loput 5 ms menee päällekkäin capturen kanssa |
+| Opus look-ahead | 2,5 | Low-delay-tila, 120 näytettä |
 | Verkko | 11 | Yhdensuuntainen, palvelimen kautta |
 | Jitter buffer | 10 | Adaptiivinen, tavoite yksi kehys |
-| Playback-puskuri | 5 | 240 näytettä, 48 kHz |
+| Playback | 10 | 5 ms rengaspuskurin odotus + 5 ms laitteen jakso (240 näytettä) |
 | **Yhteensä** | **43,5** |  |
+
+Rivijako vastaa `kuulu-bench latency` -mittausta (pahin tapaus, simuloitu kello); päivitetty 27.10.2026, summa ennallaan. Laitteiden ja ajurien oma viive mitataan vaiheessa M6.
 
 Kohinanpoisto lisää noin 10 ms, joten se on oletuksena pois päältä ja sen viive näytetään erikseen.
 
@@ -237,10 +240,10 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 
 ### M1 – Itsestään päivittyvä kuori
 
-- [ ] Tauri 2 + Svelte -sovellus, joka näyttää versionumeron
-- [ ] Updater-plugin: julkinen avain konfiguraatiossa, stable- ja beta-osoitteet
+- [x] Tauri 2 + Svelte -sovellus, joka näyttää versionumeron
+- [x] Updater-plugin: julkinen avain konfiguraatiossa, stable- ja beta-osoitteet
 - [ ] Julkaisuworkflow: tagista allekirjoitettu build kolmelle alustalle, release-luonnos ja päivitystiedosto
-- [ ] Julkaisuohje docs/RELEASING.md
+- [x] Julkaisuohje docs/RELEASING.md
 
 **Valmis kun:** asennettu v0.0.1 päivittyy itsestään versioon v0.0.2 Windowsilla, macOS:llä ja Linuxilla.
 
