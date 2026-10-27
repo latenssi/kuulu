@@ -271,7 +271,7 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 
 - [x] Tauri 2 + Svelte -sovellus, joka näyttää versionumeron
 - [x] Updater-plugin: julkinen avain konfiguraatiossa, stable- ja beta-osoitteet
-- [ ] Julkaisuworkflow: tagista allekirjoitettu build kolmelle alustalle, release-luonnos ja päivitystiedosto
+- [x] Julkaisuworkflow: tagista allekirjoitettu build kolmelle alustalle, release-luonnos ja päivitystiedosto (varmistettu v0.0.1-tagin ajolla 27.10.2026: kolme buildia, päivitysavaimella allekirjoitetut versiot, release-luonnos ja latest.json; käyttöjärjestelmätason allekirjoitus odottaa sertifikaatteja)
 - [x] Julkaisuohje docs/RELEASING.md
 
 **Valmis kun:** asennettu v0.0.1 päivittyy itsestään versioon v0.0.2 Windowsilla, macOS:llä ja Linuxilla.
@@ -321,7 +321,7 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 - [ ] Laitteistomittaus ja vertailu Mumbleen, TeamSpeakiin ja Discordiin
 - [ ] Huono mobiiliyhteys: noin 18 % myöhästyneitä kehyksiä hyväksyttiin M3:ssa toistaiseksi (jitter bufferin 60 ms katto); arvioidaan uudelleen
 - [ ] Fuzzaus ja kuormitustesti 100 clientillä
-- [ ] Docker-image, docker-compose ja palvelimen asennusohje
+- [x] Docker-image, docker-compose ja palvelimen asennusohje (`deploy/`, docs/SERVER.md)
 - [ ] Julkinen 0.1.0-beta
 
 **Valmis kun:** mitattu viive suusta korvaan pysyy budjetissa lähiverkossa, ja palvelin kestää 100 samanaikaista käyttäjää yhdellä vCPU:lla.

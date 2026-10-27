@@ -50,10 +50,16 @@ repository stays `0.0.0`.
    with the Tauri CLI from `apps/desktop/package-lock.json`
    (`tauri signer sign --app-version`), writes `latest.json` and uploads
    everything to a **draft** release. Beta tags create a prerelease.
+   In parallel, the `server` job builds the server image for linux/amd64 and
+   linux/arm64 (`deploy/Dockerfile`), pushes it as
+   `ghcr.io/latenssi/kuulu-server:X.Y.Z[-beta.N]` and adds Linux server
+   tarballs to the draft. It has `packages: write` and no secrets. The first
+   push creates the package as private: make it public once in its settings.
 4. Check the draft: all three platforms present in `latest.json`, release
    notes edited.
 5. Publish the draft. Users only see a release once it is published. This
-   also updates the beta feed.
+   also updates the beta feed and points the server image's `latest`
+   (stable) or `beta` tag at the release.
 
 A beta stays in beta for at least three days before the same code is tagged
 stable.
