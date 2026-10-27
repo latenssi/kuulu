@@ -82,7 +82,11 @@ async fn talk() -> Run {
         let (mut max_target, mut depths) = (0, Vec::new());
         for (i, frame) in input.as_chunks().0.iter().enumerate() {
             let due = start + skipped + Duration::from_millis(10) * i as u32;
-            std::thread::sleep(due.saturating_duration_since(Instant::now()));
+            // Not `sleep`: on macOS CI it overshoots by 10 ms or more on most
+            // ticks, which the listener would hear as jitter.
+            while Instant::now() < due {
+                std::thread::yield_now();
+            }
             let late = Instant::now() - due;
             if late > STALL {
                 stalls += 1;
