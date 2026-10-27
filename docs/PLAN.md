@@ -218,10 +218,10 @@ Toteutus etenee seitsemässä vaiheessa, ja jokainen päättyy toimivaan ja test
 
 ### M0 – Repo ja CI
 
-- [ ] Cargo-workspace ja crate-rungot repon rakenteen mukaan
-- [ ] CI: fmt, clippy (`-D warnings`) ja testit Linuxilla, Windowsilla ja macOS:llä
-- [ ] cargo-deny ja cargo-audit
-- [ ] LICENSE, README, CLAUDE.md ja docs/PLAN.md
+- [x] Cargo-workspace ja crate-rungot repon rakenteen mukaan
+- [x] CI: fmt, clippy (`-D warnings`) ja testit Linuxilla, Windowsilla ja macOS:llä
+- [x] cargo-deny ja cargo-audit
+- [x] LICENSE, README, CLAUDE.md ja docs/PLAN.md
 
 **Valmis kun:** tyhjä workspace läpäisee CI:n kaikilla kolmella alustalla.
 
@@ -330,7 +330,7 @@ Read it before starting any work.
 
 ## Avoimet kysymykset
 
-- [ ] **Lisenssi** ennen ensimmäistä julkista committia: AGPL-3.0 pitää myös hostatut johdannaiset avoimina, MIT/Apache-2.0 madaltaa käyttöönottoa.
+- [x] **Lisenssi:** AGPL-3.0-only (päätetty 27.10.2026). Pitää myös hostatut johdannaiset avoimina.
 - [ ] **Nimi:** tavaramerkkihaku, verkkotunnus ja GitHub-organisaatio.
 - [ ] **Pakettihäviöt:** redundanssi vai Opuksen sisäinen FEC; ratkaistaan mittaamalla vaiheessa M3.
 - [ ] **Koodiallekirjoitus:** Windows- ja macOS-sertifikaattien kustannukset ja kuka hallinnoi avaimia.
