@@ -34,6 +34,11 @@ fn data_dir(test: &str, admins: &[&IdentityKey], channels: &[&str]) -> PathBuf {
     dir
 }
 
+/// Best effort: on Windows the still-running server keeps `kuulu.db` open.
+fn cleanup(dir: &Path) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Starts the server in `dir`; returns it, its loopback address and fingerprint.
 fn start(dir: &Path) -> (Arc<Server>, SocketAddr, String) {
     let server = Arc::new(Server::open(dir).unwrap());
@@ -116,7 +121,7 @@ async fn channels_isolate_voice_and_switching_works() {
     c.request(Request::JoinChannel(1)).await.unwrap();
     let (_, at_c) = tokio::join!(talk(&a, 20), heard(&c));
     assert_eq!(at_c, 20);
-    std::fs::remove_dir_all(&dir).unwrap();
+    cleanup(&dir);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -204,7 +209,7 @@ async fn admin_actions_need_the_admin_role() {
     Client::connect_as(addr, &fp, &other_key, "other")
         .await
         .unwrap();
-    std::fs::remove_dir_all(&dir).unwrap();
+    cleanup(&dir);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -242,7 +247,7 @@ async fn bans_and_channels_survive_restart() {
     assert_eq!(rejoin.err(), Some(Error::Rejected(Reason::Banned)));
     let client = Client::connect(addr, &fp).await.unwrap();
     assert_eq!(client.state().channels[&2], "Kept");
-    std::fs::remove_dir_all(&dir).unwrap();
+    cleanup(&dir);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -279,5 +284,5 @@ async fn reconnect_restores_channel_and_mute() {
             .is_some_and(|me| me.channel_id == 2 && me.self_mute && !me.self_deaf)
     })
     .await;
-    std::fs::remove_dir_all(&dir).unwrap();
+    cleanup(&dir);
 }
