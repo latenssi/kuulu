@@ -120,6 +120,8 @@ Jokaisella clientillä on yksi QUIC-yhteys palvelimeen (oletuksena UDP 7700). Oh
 | timestamp | u32 | Näytelaskuri 48 kHz:llä |
 | payload | loput | Opus-kehys (+ edellinen kehys, jos redundanssi) |
 
+**Redundanssipayload** (flags-kentän redundanssibitti päällä): `edellisen pituus u8 | edellinen Opus-kehys | nykyinen Opus-kehys`. Pituus 0 tarkoittaa, ettei edellistä kehystä ole (virran alku tai kehys ei mahdu). Otsake ei muutu; muoto on määritelty tiedostossa `kuulu-proto/src/redundancy.rs`.
+
 Palvelin ei pura ääntä. Se tarkistaa lähettäjän, kirjoittaa sender-kentän ja välittää paketin muille saman kanavan jäsenille.
 
 **Vanha ääni on pahempi kuin hävinnyt ääni.** Datagrammien lähetysjono pidetään yhden kehyksen mittaisena, ja vanhentunut kehys pudotetaan ennemmin kuin jonotetaan. Sama sääntö pätee palvelimen lähtevään liikenteeseen.

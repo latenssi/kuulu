@@ -6,6 +6,7 @@
 
 pub mod frame;
 mod header;
+pub mod redundancy;
 mod version;
 
 pub use header::{HEADER_LEN, PACKET_VERSION, ParseError, VoiceHeader, flags};
