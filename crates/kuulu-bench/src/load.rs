@@ -270,6 +270,9 @@ async fn spread(clients: &[Arc<Client>], count: u32) -> Result<Vec<Vec<usize>>, 
 }
 
 async fn connect(server: &ServerProcess, i: usize) -> Result<Client, String> {
+    // The rate limit admits one connection every 0.5 s; far longer means
+    // the server is gone.
+    let give_up = Instant::now() + Duration::from_secs(10);
     loop {
         match Client::connect_as(
             server.addr,
@@ -282,7 +285,9 @@ async fn connect(server: &ServerProcess, i: usize) -> Result<Client, String> {
         {
             Ok(client) => return Ok(client),
             // Refused by the handshake rate limit: try again shortly.
-            Err(Error::Connection(_)) => tokio::time::sleep(Duration::from_millis(100)).await,
+            Err(Error::Connection(_)) if Instant::now() < give_up => {
+                tokio::time::sleep(Duration::from_millis(100)).await
+            }
             Err(e) => return Err(format!("client {i}: {e}")),
         }
     }
