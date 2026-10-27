@@ -21,6 +21,10 @@
         settingsOpen = false
       }),
       on<string>('update-pending', (v) => (pendingUpdate = v)),
+      // Who is speaking, ten times a second; full snapshots come each second.
+      on<number[]>('speaking', (ids) => {
+        for (const m of snap?.channels.flatMap((c) => c.members) ?? []) m.speaking = ids.includes(m.id)
+      }),
     ]
     getVersion().then((v) => (version = v))
     api.snapshot().then((s) => (snap ??= s))

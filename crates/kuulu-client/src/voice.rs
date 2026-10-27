@@ -40,7 +40,7 @@ const INCOMING: usize = 64;
 /// Session ids of members who left, waiting for the next [`Voice::play`].
 const LEFT: usize = 64;
 /// Senders with a gain other than 1.0 at once; more keep 1.0.
-const MAX_GAINS: usize = 64;
+pub const MAX_GAINS: usize = 64;
 /// A sender counts as speaking until this many frames after its last
 /// packet (200 ms): clients send only while their gate is open.
 const SPEAKING_HOLD: u32 = 20;
@@ -127,6 +127,12 @@ impl Senders {
             .map_or(1.0, |(_, gain)| {
                 f32::from_bits(gain.load(Ordering::Relaxed))
             })
+    }
+
+    /// Session ids whose voice is arriving now.
+    pub fn speaking_now(&self) -> impl Iterator<Item = u32> + '_ {
+        let ids = self.speaking.iter().map(|id| id.load(Ordering::Relaxed));
+        ids.filter(|&id| id != 0)
     }
 
     /// Whether this sender's voice is arriving now.
@@ -536,6 +542,7 @@ mod tests {
         });
         assert!(out.iter().all(|&s| s == 0.0), "sender 1 is at gain 0");
         assert!(senders.speaking(1) && !senders.speaking(2));
+        assert_eq!(senders.speaking_now().collect::<Vec<_>>(), [1]);
         // Sender 1 goes quiet; after the hold it no longer speaks.
         for _ in 0..SPEAKING_HOLD {
             listener.play(&mut out);

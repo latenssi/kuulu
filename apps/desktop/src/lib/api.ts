@@ -90,6 +90,7 @@ export const api = {
   preferences: () => invoke<Preferences>('preferences'),
   setPreferences: (preferences: Preferences) => invoke<void>('set_preferences', { preferences }),
   capturePttKey: () => invoke<string | null>('capture_ptt_key'),
+  cancelPttCapture: () => invoke<void>('cancel_ptt_capture'),
 }
 
 export function on<T>(event: string, handler: (payload: T) => void): Promise<UnlistenFn> {

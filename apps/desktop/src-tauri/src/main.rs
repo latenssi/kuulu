@@ -55,6 +55,7 @@ fn main() {
             commands::preferences,
             commands::set_preferences,
             commands::capture_ptt_key,
+            commands::cancel_ptt_capture,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kuulu");

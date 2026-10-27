@@ -2700,8 +2700,6 @@ dependencies = [
 [[package]]
 name = "monio"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70435ac0ed4c5314fb195acc0d7b74b0bafeefcc5537e1b681e6fa055937aafe"
 dependencies = [
  "log",
  "objc2",

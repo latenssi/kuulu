@@ -41,6 +41,8 @@
   }
 </script>
 
+<svelte:window onblur={() => capturing && api.cancelPttCapture()} />
+
 <div class="layout">
   <nav>
     <button class="back" onclick={onBack}>

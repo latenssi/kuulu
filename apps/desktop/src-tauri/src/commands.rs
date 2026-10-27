@@ -137,6 +137,12 @@ pub async fn set_preferences(
     Ok(())
 }
 
+/// Ends a running [`capture_ptt_key`] with no input.
+#[tauri::command(async)]
+pub fn cancel_ptt_capture() {
+    ptt::cancel_capture();
+}
+
 /// Waits for the next key or mouse side button and makes it the
 /// push-to-talk input. `None` if cancelled (Escape) or timed out.
 #[tauri::command]

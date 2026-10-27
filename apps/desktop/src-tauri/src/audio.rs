@@ -159,6 +159,11 @@ impl Audio {
         }
     }
 
+    /// Session ids whose voice is arriving now.
+    pub fn speaking_now(&self) -> impl Iterator<Item = u32> + '_ {
+        self.senders.iter().flat_map(|s| s.speaking_now())
+    }
+
     /// Whether this sender's voice is arriving now.
     pub fn speaking(&self, session_id: u32) -> bool {
         self.senders

@@ -8,6 +8,7 @@ use crate::invite::Invite;
 use crate::latency::{self, Latency};
 use crate::settings::{DEFAULT_VOLUME, Settings, Store, TalkMode};
 use crate::{identity, ptt};
+use kuulu_client::voice::MAX_GAINS;
 use kuulu_client::{Client, Event, IdentityKey, Request, ServerState};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -17,6 +18,8 @@ use tokio::sync::broadcast::error::RecvError;
 
 /// How often RTT and audio stats are refreshed in the UI.
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
+/// How often who is speaking is refreshed, as `speaking` events.
+const SPEAKING_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Invites made from the client, as in the plan's CLI example.
 const INVITE_USES: u32 = 10;
@@ -396,8 +399,32 @@ impl Session {
         let settings = self.settings();
         let inner = self.lock();
         if let (Some(call), Some(audio)) = (&inner.call, &inner.audio) {
-            audio.set_gains(&gains(&call.client.state(), &settings));
+            let gains = gains(&call.client.state(), &settings);
+            if gains.len() > MAX_GAINS {
+                eprintln!(
+                    "{} members have a custom volume; only {MAX_GAINS} apply",
+                    gains.len()
+                );
+            }
+            audio.set_gains(&gains);
         }
+    }
+
+    /// Session ids whose voice is arriving now, ours included while our
+    /// gate is open and we are not muted. Sorted.
+    fn speaking(&self) -> Vec<u32> {
+        let inner = self.lock();
+        let (Some(call), Some(audio)) = (&inner.call, &inner.audio) else {
+            return Vec::new();
+        };
+        let silenced = inner.local.muted || inner.local.deafened;
+        let me = call
+            .client
+            .session_id()
+            .filter(|_| audio.transmitting() && !silenced);
+        let mut ids: Vec<u32> = audio.speaking_now().chain(me).collect();
+        ids.sort_unstable();
+        ids
     }
 
     fn emit(&self) {
@@ -427,7 +454,7 @@ impl Session {
             inner.reset(Phase::Connecting)
         };
         drop(old);
-        ptt::stop();
+        ptt::stop(None);
         self.emit();
 
         let client = match self.connect(&invite, name).await {
@@ -501,18 +528,18 @@ impl Session {
     pub fn leave(&self) {
         let (_, old) = self.lock().reset(Phase::Idle);
         drop(old);
-        ptt::stop();
+        ptt::stop(None);
         self.app.state::<Store>().update(|s| s.last_server = None);
         self.emit();
     }
 
     /// Starts or stops the push-to-talk hook for the current settings.
     /// Returns why push-to-talk is unavailable, if it is.
-    fn apply_talk_mode(&self, settings: &Settings) -> Option<String> {
+    fn apply_talk_mode(&self, settings: &Settings, attempt: u64) -> Option<String> {
         let unavailable = match settings.talk_mode {
-            TalkMode::PushToTalk => ptt::start(&settings.ptt_key, self.gate.clone()).err(),
+            TalkMode::PushToTalk => ptt::start(&settings.ptt_key, self.gate.clone(), attempt).err(),
             TalkMode::VoiceActivity => {
-                ptt::stop();
+                ptt::stop(Some(attempt));
                 None
             }
         };
@@ -533,7 +560,7 @@ impl Session {
         drop(old); // Release the devices first.
         let Some(client) = client else { return };
         let settings = self.settings();
-        let unavailable = self.apply_talk_mode(&settings);
+        let unavailable = self.apply_talk_mode(&settings, attempt);
         let audio = devices.then(|| {
             Audio::start(
                 settings.input_device.as_deref(),
@@ -545,7 +572,7 @@ impl Session {
         let mut inner = self.lock();
         if inner.attempt != attempt {
             drop(inner);
-            ptt::stop(); // The call this was for is gone.
+            ptt::stop(Some(attempt)); // The call this was for is gone.
             return;
         }
         inner.local.ptt_unavailable = unavailable;
@@ -695,7 +722,7 @@ impl Session {
             inner.reset(Phase::client_failed(e)).1
         };
         drop(old);
-        ptt::stop();
+        ptt::stop(Some(attempt));
     }
 }
 
@@ -705,14 +732,25 @@ async fn watch(app: AppHandle, client: Arc<Client>, attempt: u64) {
     let session = app.state::<Session>();
     let mut events = client.events();
     let mut stats = tokio::time::interval(STATS_INTERVAL);
+    let mut speaking = tokio::time::interval(SPEAKING_INTERVAL);
+    let mut last_speaking = Vec::new();
     loop {
         tokio::select! {
             event = events.recv() => match event {
                 Ok(event) => session.on_event(&event),
-                // The snapshot reads the client's state, which is current.
-                Err(RecvError::Lagged(_)) => {}
+                // The snapshot reads the client's state, which is current;
+                // gains are recomputed from it too.
+                Err(RecvError::Lagged(_)) => session.apply_gains(),
                 Err(RecvError::Closed) => return,
             },
+            _ = speaking.tick() => {
+                let now = session.speaking();
+                if now != last_speaking {
+                    let _ = app.emit("speaking", &now);
+                    last_speaking = now;
+                }
+                continue;
+            }
             e = client.stopped() => {
                 session.on_stopped(attempt, &e);
                 session.emit();
